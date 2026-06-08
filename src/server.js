@@ -271,6 +271,37 @@ async function processMessage(message, channelId, client) {
   console.log(`[${new Date().toLocaleTimeString()}] ${type.toUpperCase()} order — ${customerName}: ${parsed.items.map(i => `${i.qty}x ${i.item}`).join(', ')}`);
 }
 
+// ─── One-time migration: merge existing "add" orders into base customers ───────
+
+function migrateAddOrders() {
+  const orders = loadOrders();
+  let changed = false;
+
+  for (const customerName of Object.keys(orders)) {
+    if (!/\badd\b/i.test(customerName)) continue;
+
+    const baseName = customerName.replace(/\s*\badd\b\s*/i, '').trim();
+    if (!orders[baseName] || orders[baseName].length === 0) continue;
+
+    const mostRecent = orders[baseName][orders[baseName].length - 1];
+
+    for (const addOrder of orders[customerName]) {
+      for (const newItem of addOrder.items) {
+        const already = mostRecent.items.some(i =>
+          i.qty === newItem.qty && i.item.toLowerCase() === newItem.item.toLowerCase()
+        );
+        if (!already) mostRecent.items.push(newItem);
+      }
+    }
+
+    delete orders[customerName];
+    changed = true;
+    console.log(`Migrated "add" orders from "${customerName}" into "${baseName}"`);
+  }
+
+  if (changed) saveOrders(orders);
+}
+
 // ─── Backfill today's orders ──────────────────────────────────────────────────
 
 async function backfillToday(client) {
@@ -391,5 +422,6 @@ web.listen(PORT, () => console.log(`Dashboard → http://localhost:${PORT}`));
   } catch (e) {
     console.error('Could not get team domain:', e.message);
   }
+  migrateAddOrders();
   await backfillToday(slackApp.client);
 })();
