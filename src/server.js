@@ -162,24 +162,39 @@ async function processMessage(message, channelId, client) {
         const orders = loadOrders();
         if (!orders[customerName]) orders[customerName] = [];
 
-        // Avoid duplicates
-        if (orders[customerName].some(o => o.ts === ts + '_img_' + file.id)) continue;
+        const imgTs = ts + '_img_' + file.id;
+        if (orders[customerName].some(o => o.ts === imgTs || (o.ts_all || []).includes(imgTs))) continue;
 
         const slackLink = slackTeamDomain
           ? `https://${slackTeamDomain}.slack.com/archives/${channelId}/p${ts.replace('.', '')}`
           : null;
 
-        orders[customerName].push({
-          id: Date.now() + Math.floor(Math.random() * 1000),
-          ts: ts + '_img_' + file.id,
-          timestamp: new Date(parseFloat(ts) * 1000).toISOString(),
-          channel: channelId,
-          type,
-          source: 'image',
-          sender: senderName,
-          slackLink,
-          items: parsed.items,
-        });
+        const msgDate = new Date(parseFloat(ts) * 1000).toDateString();
+        const existingToday = orders[customerName].find(o => new Date(o.timestamp).toDateString() === msgDate);
+
+        if (existingToday) {
+          for (const newItem of parsed.items) {
+            const already = existingToday.items.some(i => i.qty === newItem.qty && i.item.toLowerCase() === newItem.item.toLowerCase());
+            if (!already) existingToday.items.push(newItem);
+          }
+          if (!existingToday.slackLinks) existingToday.slackLinks = [existingToday.slackLink].filter(Boolean);
+          if (slackLink && !existingToday.slackLinks.includes(slackLink)) existingToday.slackLinks.push(slackLink);
+          existingToday.ts_all = [...(existingToday.ts_all || [existingToday.ts]), imgTs];
+        } else {
+          orders[customerName].push({
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            ts: imgTs,
+            ts_all: [imgTs],
+            timestamp: new Date(parseFloat(ts) * 1000).toISOString(),
+            channel: channelId,
+            type,
+            source: 'image',
+            sender: senderName,
+            slackLink,
+            slackLinks: slackLink ? [slackLink] : [],
+            items: parsed.items,
+          });
+        }
 
         saveOrders(orders);
         broadcast();
@@ -211,15 +226,43 @@ async function processMessage(message, channelId, client) {
     ? `https://${slackTeamDomain}.slack.com/archives/${channelId}/p${ts.replace('.', '')}`
     : null;
 
+  // If the customer name contains "add", merge into their most recent order
+  const isAddOn = /\badd\b/i.test(customerName);
+
+  if (isAddOn) {
+    // Strip "add" from name to find the base customer (e.g. "Farmsview add" → "Farmsview")
+    const baseName = customerName.replace(/\s*\badd\b\s*/i, '').trim();
+    const baseOrders = orders[baseName];
+
+    if (baseOrders && baseOrders.length > 0) {
+      // Merge into the most recent order for that customer
+      const mostRecent = baseOrders[baseOrders.length - 1];
+      for (const newItem of parsed.items) {
+        const already = mostRecent.items.some(i => i.qty === newItem.qty && i.item.toLowerCase() === newItem.item.toLowerCase());
+        if (!already) mostRecent.items.push(newItem);
+      }
+      if (!mostRecent.slackLinks) mostRecent.slackLinks = [mostRecent.slackLink].filter(Boolean);
+      if (slackLink && !mostRecent.slackLinks.includes(slackLink)) mostRecent.slackLinks.push(slackLink);
+      mostRecent.ts_all = [...(mostRecent.ts_all || [mostRecent.ts]), ts];
+      saveOrders(orders);
+      broadcast();
+      console.log(`[${new Date().toLocaleTimeString()}] ADD-ON merged into ${baseName}: ${parsed.items.map(i => `${i.qty}x ${i.item}`).join(', ')}`);
+      return;
+    }
+  }
+
+  // New order
   orders[customerName].push({
     id: Date.now() + Math.floor(Math.random() * 1000),
     ts,
+    ts_all: [ts],
     timestamp: new Date(parseFloat(ts) * 1000).toISOString(),
     channel: channelId,
     type,
     source: 'text',
     sender: senderName,
     slackLink,
+    slackLinks: slackLink ? [slackLink] : [],
     items: parsed.items,
   });
 
