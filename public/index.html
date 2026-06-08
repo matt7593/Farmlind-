@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Farmlind Orders</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f4f0;
+      color: #1a1a1a;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #2d5a27;
+      color: #fff;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      box-shadow: 0 2px 8px rgba(0,0,0,.25);
+    }
+
+    header h1 { font-size: 1.35rem; font-weight: 700; }
+
+    #status {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: .82rem;
+      opacity: .85;
+    }
+
+    #dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #6fcf6f;
+      box-shadow: 0 0 6px #6fcf6f;
+    }
+
+    #dot.offline { background: #e05; box-shadow: 0 0 6px #e05; }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 16px 24px 0;
+      background: #2d5a27;
+    }
+
+    .tab {
+      padding: 9px 22px;
+      border-radius: 8px 8px 0 0;
+      cursor: pointer;
+      font-size: .9rem;
+      font-weight: 600;
+      color: rgba(255,255,255,.65);
+      background: rgba(255,255,255,.1);
+      border: none;
+      transition: background .15s, color .15s;
+    }
+
+    .tab.active {
+      background: #f0f4f0;
+      color: #2d5a27;
+    }
+
+    .tab-count {
+      display: inline-block;
+      background: rgba(255,255,255,.2);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: .72rem;
+      margin-left: 6px;
+    }
+
+    .tab.active .tab-count { background: #2d5a2722; color: #2d5a27; }
+
+    /* ── Main ── */
+    main { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* ── Channel config banner ── */
+    #config-banner {
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: .875rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    #config-banner button {
+      margin-left: auto;
+      background: #2d5a27;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: .82rem;
+      cursor: pointer;
+    }
+
+    /* ── Channel setup modal ── */
+    #modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.45);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #modal-overlay.open { display: flex; }
+
+    #modal {
+      background: #fff;
+      border-radius: 14px;
+      padding: 28px;
+      width: 480px;
+      max-width: 95vw;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 32px rgba(0,0,0,.2);
+    }
+
+    #modal h2 { font-size: 1.1rem; margin-bottom: 6px; }
+    #modal p  { font-size: .85rem; color: #666; margin-bottom: 18px; }
+
+    .channel-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: .88rem;
+    }
+
+    .channel-row:last-child { border-bottom: none; }
+
+    .channel-name { flex: 1; font-weight: 500; }
+
+    .channel-row select {
+      padding: 5px 8px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: .82rem;
+      background: #fff;
+    }
+
+    #modal-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+
+    #modal-actions button {
+      padding: 8px 20px;
+      border-radius: 7px;
+      font-size: .87rem;
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-save { background: #2d5a27; color: #fff; }
+    .btn-cancel { background: #eee; color: #333; }
+
+    /* ── Empty state ── */
+    .empty {
+      text-align: center;
+      color: #888;
+      margin-top: 60px;
+      font-size: 1rem;
+    }
+
+    .empty span { display: block; font-size: 2.5rem; margin-bottom: 10px; }
+
+    /* ── Grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 18px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.08);
+      overflow: hidden;
+      animation: pop .22s ease;
+    }
+
+    @keyframes pop {
+      from { transform: scale(.97); opacity: 0; }
+      to   { transform: scale(1);   opacity: 1; }
+    }
+
+    .card-header {
+      background: #2d5a27;
+      color: #fff;
+      padding: 13px 15px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .card-header h2 { font-size: 1rem; font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .clear-btn {
+      background: rgba(255,255,255,.15);
+      border: 1px solid rgba(255,255,255,.3);
+      color: #fff;
+      border-radius: 6px;
+      padding: 4px 9px;
+      font-size: .72rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .clear-btn:hover { background: rgba(255,255,255,.28); }
+
+    .orders-list { padding: 6px 0; }
+
+    .order-block {
+      padding: 11px 15px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .order-block:last-child { border-bottom: none; }
+
+    .order-date {
+      font-size: .8rem;
+      font-weight: 600;
+      color: #2d5a27;
+      margin-bottom: 5px;
+    }
+
+    .order-time {
+      font-size: .72rem;
+      color: #aaa;
+      margin-bottom: 7px;
+    }
+
+    .order-meta {
+      font-size: .72rem;
+      color: #888;
+      margin-bottom: 7px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .order-meta .spacer { flex: 1; }
+
+    .type-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: .68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .4px;
+    }
+
+    .type-badge.restaurant { background: #fff0e0; color: #c0580a; }
+    .type-badge.grocery    { background: #e0f0e0; color: #2d7a20; }
+    .type-badge.unknown    { background: #f0f0f0; color: #888; }
+
+    .move-btn {
+      background: none;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      color: #666;
+      font-size: .68rem;
+      padding: 2px 7px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .move-btn:hover { border-color: #2d5a27; color: #2d5a27; }
+
+    .delete-order {
+      background: none;
+      border: none;
+      color: #ccc;
+      cursor: pointer;
+      font-size: .95rem;
+      padding: 0 2px;
+      line-height: 1;
+    }
+
+    .delete-order:hover { color: #e05; }
+
+    .items-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    .items-table tr:nth-child(even) td { background: #f8faf8; }
+    .items-table td { padding: 4px 6px; }
+    .items-table td:first-child {
+      width: 36px;
+      text-align: center;
+      font-weight: 700;
+      color: #2d5a27;
+      background: #eaf4ea;
+      border-radius: 4px;
+    }
+
+    .order-count {
+      display: inline-block;
+      background: rgba(255,255,255,.22);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: .7rem;
+      margin-left: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🌿 Farmlind Orders</h1>
+  <div id="status">
+    <div id="dot"></div>
+    <span id="status-text">Connecting…</span>
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('all')"     id="tab-all">All Orders <span class="tab-count" id="cnt-all">0</span></button>
+  <button class="tab"        onclick="switchTab('restaurant')" id="tab-restaurant">🍽 Restaurants <span class="tab-count" id="cnt-restaurant">0</span></button>
+  <button class="tab"        onclick="switchTab('grocery')"    id="tab-grocery">🛒 Grocery <span class="tab-count" id="cnt-grocery">0</span></button>
+  <button class="tab"        onclick="switchTab('unknown')"    id="tab-unknown">❓ Uncategorized <span class="tab-count" id="cnt-unknown">0</span></button>
+</div>
+
+<main>
+  <div id="config-banner">
+    <span>⚙️ Set up which Slack channels are <strong>restaurants</strong> vs <strong>grocery stores</strong> so orders are automatically sorted.</span>
+    <button onclick="openModal()">Configure Channels</button>
+  </div>
+
+  <div id="panel-all"        class="panel active"><div class="grid" id="grid-all"></div></div>
+  <div id="panel-restaurant" class="panel"><div class="grid" id="grid-restaurant"></div></div>
+  <div id="panel-grocery"    class="panel"><div class="grid" id="grid-grocery"></div></div>
+  <div id="panel-unknown"    class="panel"><div class="grid" id="grid-unknown"></div></div>
+</main>
+
+<!-- Channel config modal -->
+<div id="modal-overlay">
+  <div id="modal">
+    <h2>Configure Channels</h2>
+    <p>Set each Slack channel as a Restaurant channel or a Grocery channel. Orders in that channel will be automatically tagged.</p>
+    <div id="channel-list">Loading channels…</div>
+    <div id="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-save"   onclick="saveChannels()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let allOrders = {};
+  let activeTab = 'all';
+  let channelNames = {}; // id → name
+
+  // ── Tab switching ──────────────────────────────────────────────────────────
+  function switchTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('panel-' + tab).classList.add('active');
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  function render(orders) {
+    allOrders = orders;
+    const customers = Object.keys(orders).sort((a, b) => a.localeCompare(b));
+
+    const tabs = ['all', 'restaurant', 'grocery', 'unknown'];
+
+    // Count customers per tab
+    const counts = { all: 0, restaurant: 0, grocery: 0, unknown: 0 };
+
+    for (const name of customers) {
+      const types = new Set(orders[name].map(o => o.type || 'unknown'));
+      counts.all++;
+      for (const t of types) if (counts[t] !== undefined) counts[t]++;
+    }
+
+    for (const t of tabs) {
+      document.getElementById('cnt-' + t).textContent = counts[t];
+    }
+
+    for (const t of tabs) {
+      const grid = document.getElementById('grid-' + t);
+      const filtered = t === 'all'
+        ? customers
+        : customers.filter(name => orders[name].some(o => (o.type || 'unknown') === t));
+
+      if (filtered.length === 0) {
+        grid.innerHTML = `<div class="empty"><span>${t === 'restaurant' ? '🍽' : t === 'grocery' ? '🛒' : '🥬'}</span>No ${t === 'all' ? '' : t + ' '}orders yet.</div>`;
+        continue;
+      }
+
+      // Remove stale cards
+      const incoming = new Set(filtered);
+      for (const el of grid.querySelectorAll('.card')) {
+        if (!incoming.has(el.dataset.customer)) el.remove();
+      }
+
+      for (const name of filtered) {
+        const orderList = orders[name];
+        // For non-all tabs, only show orders matching that type
+        const visibleOrders = t === 'all' ? orderList : orderList.filter(o => (o.type || 'unknown') === t);
+
+        let card = grid.querySelector(`.card[data-customer="${CSS.escape(name)}"]`);
+        if (!card) {
+          card = document.createElement('div');
+          card.className = 'card';
+          card.dataset.customer = name;
+          grid.appendChild(card);
+        }
+
+        // Get unique senders for this customer
+        const senders = [...new Set(visibleOrders.map(o => o.sender).filter(Boolean))];
+
+        card.innerHTML = `
+          <div class="card-header">
+            <div style="flex:1;min-width:0">
+              <h2>${esc(name)} <span class="order-count">${visibleOrders.length}</span></h2>
+              ${senders.length ? `<div style="font-size:.72rem;opacity:.75;margin-top:2px">via ${senders.map(s => esc(s)).join(', ')}</div>` : ''}
+            </div>
+            <button class="clear-btn" onclick="clearCustomer('${esc(name)}')">Clear all</button>
+          </div>
+          <div class="orders-list">
+            ${visibleOrders.map(o => {
+              const type = o.type || 'unknown';
+              const otherType = type === 'restaurant' ? 'grocery' : type === 'grocery' ? 'restaurant' : 'restaurant';
+              const otherLabel = otherType === 'restaurant' ? '🍽 Move to Restaurant' : '🛒 Move to Grocery';
+              return `
+              <div class="order-block">
+                <div class="order-date">
+                  📅 ${fmtDate(o.timestamp)}
+                  ${o.slackLink ? `<a href="${esc(o.slackLink)}" target="_blank" style="margin-left:8px;font-size:.72rem;color:#2d5a27;text-decoration:none;font-weight:500" title="View in Slack">↗ Open in Slack</a>` : ''}
+                </div>
+                <div class="order-meta">
+                  <span>🕐 ${fmtTime(o.timestamp)}</span>
+                  ${o.sender ? `<span style="color:#666">by ${esc(o.sender)}</span>` : ''}
+                  <span class="type-badge ${type}">${type}</span>
+                  <span class="spacer"></span>
+                  <button class="move-btn" onclick="moveOrder('${esc(name)}', ${o.id}, '${otherType}')">${otherLabel}</button>
+                  <button class="delete-order" title="Remove" onclick="deleteOrder('${esc(name)}', ${o.id})">✕</button>
+                </div>
+                <table class="items-table">
+                  ${o.items.map(i => `<tr><td>${i.qty}</td><td>${esc(i.item)}</td></tr>`).join('')}
+                </table>
+              </div>`;
+            }).join('')}
+          </div>`;
+      }
+
+      // Sort DOM children alphabetically
+      filtered.forEach((name, i) => {
+        const card = grid.querySelector(`.card[data-customer="${CSS.escape(name)}"]`);
+        if (card && grid.children[i] !== card) grid.appendChild(card);
+      });
+    }
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+  async function deleteOrder(customer, id) {
+    await fetch(`/api/orders/${encodeURIComponent(customer)}/${id}`, { method: 'DELETE' });
+  }
+
+  async function clearCustomer(customer) {
+    if (!confirm(`Clear all orders for ${customer}?`)) return;
+    await fetch(`/api/orders/${encodeURIComponent(customer)}`, { method: 'DELETE' });
+  }
+
+  async function moveOrder(customer, id, newType) {
+    await fetch(`/api/orders/${encodeURIComponent(customer)}/${id}/type`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: newType }),
+    });
+  }
+
+  // ── Channel config modal ───────────────────────────────────────────────────
+  let channelConfig = { restaurant: [], grocery: [] };
+
+  async function openModal() {
+    document.getElementById('modal-overlay').classList.add('open');
+    const [chRes, cfgRes] = await Promise.all([
+      fetch('/api/slack/channels').catch(() => null),
+      fetch('/api/channels'),
+    ]);
+    channelConfig = await cfgRes.json();
+
+    // Gather unique channel IDs from existing orders
+    const channelIds = new Set();
+    for (const orders of Object.values(allOrders)) {
+      for (const o of orders) if (o.channel) channelIds.add(o.channel);
+    }
+
+    const list = document.getElementById('channel-list');
+    if (channelIds.size === 0) {
+      list.innerHTML = '<p style="color:#888;font-size:.85rem">No channel data yet — orders will appear here once they come in.</p>';
+      return;
+    }
+
+    list.innerHTML = [...channelIds].map(id => {
+      const label = channelNames[id] || id;
+      const selected = channelConfig.restaurant.includes(id) ? 'restaurant'
+                     : channelConfig.grocery.includes(id)    ? 'grocery'
+                     : 'unknown';
+      return `
+        <div class="channel-row">
+          <span class="channel-name">#${esc(label)}</span>
+          <select data-channel="${esc(id)}">
+            <option value="unknown"    ${selected==='unknown'    ? 'selected':''}>Uncategorized</option>
+            <option value="restaurant" ${selected==='restaurant' ? 'selected':''}>🍽 Restaurant</option>
+            <option value="grocery"    ${selected==='grocery'    ? 'selected':''}>🛒 Grocery</option>
+          </select>
+        </div>`;
+    }).join('');
+  }
+
+  function closeModal() {
+    document.getElementById('modal-overlay').classList.remove('open');
+  }
+
+  async function saveChannels() {
+    const newCfg = { restaurant: [], grocery: [] };
+    document.querySelectorAll('#channel-list select').forEach(sel => {
+      const id = sel.dataset.channel;
+      if (sel.value === 'restaurant') newCfg.restaurant.push(id);
+      if (sel.value === 'grocery')    newCfg.grocery.push(id);
+    });
+    await fetch('/api/channels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newCfg),
+    });
+    closeModal();
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function fmtDate(iso) {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function fmtTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function esc(str) {
+    return String(str)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── SSE live connection ────────────────────────────────────────────────────
+  const dot = document.getElementById('dot');
+  const statusText = document.getElementById('status-text');
+
+  function connect() {
+    const es = new EventSource('/api/orders/stream');
+    es.onopen = () => { dot.classList.remove('offline'); statusText.textContent = 'Live'; };
+    es.onmessage = e => { try { render(JSON.parse(e.data)); } catch {} };
+    es.onerror = () => {
+      dot.classList.add('offline'); statusText.textContent = 'Reconnecting…';
+      es.close(); setTimeout(connect, 3000);
+    };
+  }
+
+  connect();
+</script>
+</body>
+</html>
