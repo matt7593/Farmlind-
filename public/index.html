@@ -445,13 +445,13 @@
 <div id="section-orders">
   <div style="background:#2d5a27;padding:0 24px 0;display:flex;gap:4px;">
     <button class="tab active" onclick="switchTab('all')"        id="tab-all">All <span class="tab-count" id="cnt-all">0</span></button>
-    <button class="tab"        onclick="switchTab('restaurant')" id="tab-restaurant">🍽 Restaurants <span class="tab-count" id="cnt-restaurant">0</span></button>
-    <button class="tab"        onclick="switchTab('grocery')"    id="tab-grocery">🛒 Grocery <span class="tab-count" id="cnt-grocery">0</span></button>
+    <button class="tab"        onclick="switchTab('restaurant')" id="tab-restaurant">🍽 Restaurant Sale Orders <span class="tab-count" id="cnt-restaurant">0</span></button>
+    <button class="tab"        onclick="switchTab('grocery')"    id="tab-grocery">🛒 Store Sale Orders <span class="tab-count" id="cnt-grocery">0</span></button>
     <button class="tab"        onclick="switchTab('unknown')"    id="tab-unknown">❓ Uncategorized <span class="tab-count" id="cnt-unknown">0</span></button>
   </div>
   <main>
     <div id="config-banner">
-      <span>⚙️ Set up which Slack channels are <strong>restaurants</strong> vs <strong>grocery stores</strong> so orders are automatically sorted.</span>
+      <span>⚙️ Set up which Slack channels are <strong>Restaurant Sale Orders</strong> vs <strong>Store Sale Orders</strong> so orders are automatically sorted.</span>
       <button onclick="openModal()">Configure Channels</button>
     </div>
     <div id="panel-all"        class="panel active"><div class="grid" id="grid-all"></div></div>
@@ -474,7 +474,7 @@
 <div id="modal-overlay">
   <div id="modal">
     <h2>Configure Channels</h2>
-    <p>Set each Slack channel as a Restaurant channel or a Grocery channel. Orders in that channel will be automatically tagged.</p>
+    <p>Set each Slack channel as a Restaurant Sale Orders channel or a Store Sale Orders channel. Orders in that channel will be automatically tagged.</p>
     <div id="channel-list">Loading channels…</div>
     <div id="modal-actions">
       <button class="btn-cancel" onclick="closeModal()">Cancel</button>
@@ -623,8 +623,8 @@
       </div>
       <div style="display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap">
         <button id="totals-tab-all"        class="tab ${activeTotalsTab==='all'        ? 'active':''}" style="background:${activeTotalsTab==='all'        ?'#2d5a27':'#ddd'};color:${activeTotalsTab==='all'        ?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('all')">📦 Total</button>
-        <button id="totals-tab-grocery"    class="tab ${activeTotalsTab==='grocery'    ? 'active':''}" style="background:${activeTotalsTab==='grocery'    ?'#2d5a27':'#ddd'};color:${activeTotalsTab==='grocery'    ?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('grocery')">🛒 Grocery Total</button>
-        <button id="totals-tab-restaurant" class="tab ${activeTotalsTab==='restaurant' ? 'active':''}" style="background:${activeTotalsTab==='restaurant'?'#2d5a27':'#ddd'};color:${activeTotalsTab==='restaurant'?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('restaurant')">🍽 Restaurant Total</button>
+        <button id="totals-tab-grocery"    class="tab ${activeTotalsTab==='grocery'    ? 'active':''}" style="background:${activeTotalsTab==='grocery'    ?'#2d5a27':'#ddd'};color:${activeTotalsTab==='grocery'    ?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('grocery')">🛒 Store Sale Orders Total</button>
+        <button id="totals-tab-restaurant" class="tab ${activeTotalsTab==='restaurant' ? 'active':''}" style="background:${activeTotalsTab==='restaurant'?'#2d5a27':'#ddd'};color:${activeTotalsTab==='restaurant'?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('restaurant')">🍽 Restaurant Sale Orders Total</button>
       </div>
       <div id="totals-panel-all"        style="display:${activeTotalsTab==='all'        ?'':'none'}">${totalsTable(day.entries)}</div>
       <div id="totals-panel-grocery"    style="display:${activeTotalsTab==='grocery'    ?'':'none'}">${totalsTable(groceryEntries)}</div>
@@ -658,7 +658,8 @@
         : customers.filter(name => orders[name].some(o => (o.type || 'unknown') === t));
 
       if (filtered.length === 0) {
-        grid.innerHTML = `<div class="empty"><span>${t === 'restaurant' ? '🍽' : t === 'grocery' ? '🛒' : '🥬'}</span>No ${t === 'all' ? '' : t + ' '}orders yet.</div>`;
+        const label = t === 'restaurant' ? 'Restaurant Sale Orders' : t === 'grocery' ? 'Store Sale Orders' : t === 'unknown' ? 'uncategorized' : '';
+        grid.innerHTML = `<div class="empty"><span>${t === 'restaurant' ? '🍽' : t === 'grocery' ? '🛒' : '🥬'}</span>No ${label} orders yet.</div>`;
         continue;
       }
 
@@ -696,7 +697,7 @@
             ${visibleOrders.map(o => {
               const type = o.type || 'unknown';
               const otherType = type === 'restaurant' ? 'grocery' : type === 'grocery' ? 'restaurant' : 'restaurant';
-              const otherLabel = otherType === 'restaurant' ? '🍽 Move to Restaurant' : '🛒 Move to Grocery';
+              const otherLabel = otherType === 'restaurant' ? '🍽 Move to Restaurant Sale Orders' : '🛒 Move to Store Sale Orders';
               return `
               <div class="order-block">
                 <div class="order-date">
@@ -706,7 +707,7 @@
                 <div class="order-meta">
                   <span>🕐 ${fmtTime(o.timestamp)}</span>
                   ${o.sender ? `<span style="color:#666">by ${esc(o.sender)}</span>` : ''}
-                  <span class="type-badge ${type}">${type}</span>
+                  <span class="type-badge ${type}">${type === 'restaurant' ? 'Restaurant Sale Orders' : type === 'grocery' ? 'Store Sale Orders' : type}</span>
                   <span class="spacer"></span>
                   <button class="move-btn" onclick="moveOrder('${esc(name)}', ${o.id}, '${otherType}')">${otherLabel}</button>
                   <button class="delete-order" title="Remove" onclick="deleteOrder('${esc(name)}', ${o.id})">✕</button>
@@ -778,8 +779,8 @@
           <span class="channel-name">#${esc(label)}</span>
           <select data-channel="${esc(id)}">
             <option value="unknown"    ${selected==='unknown'    ? 'selected':''}>Uncategorized</option>
-            <option value="restaurant" ${selected==='restaurant' ? 'selected':''}>🍽 Restaurant</option>
-            <option value="grocery"    ${selected==='grocery'    ? 'selected':''}>🛒 Grocery</option>
+            <option value="restaurant" ${selected==='restaurant' ? 'selected':''}>🍽 Restaurant Sale Orders</option>
+            <option value="grocery"    ${selected==='grocery'    ? 'selected':''}>🛒 Store Sale Orders</option>
           </select>
         </div>`;
     }).join('');
