@@ -510,21 +510,31 @@
   }
 
   // ── Daily totals ───────────────────────────────────────────────────────────
+  let activeTotalsTab = 'all';
+
+  function localDateKey(date) {
+    // Use local timezone for grouping, not UTC
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0')
+    ].join('-');
+  }
+
   function renderDailyTotals(orders) {
-    // Collect all unique days across all orders
-    const dayMap = {}; // "2026-06-08" → { label, orders: [{customer, items, type}] }
+    const dayMap = {};
 
     for (const [customer, orderList] of Object.entries(orders)) {
       for (const order of orderList) {
-        const d = new Date(order.timestamp);
-        const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
+        const d   = new Date(order.timestamp);
+        const key = localDateKey(d);
         const label = d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
         if (!dayMap[key]) dayMap[key] = { label, key, entries: [] };
         dayMap[key].entries.push({ customer, items: order.items, type: order.type || 'unknown' });
       }
     }
 
-    const days = Object.keys(dayMap).sort().reverse(); // newest first
+    const days = Object.keys(dayMap).sort().reverse();
 
     if (days.length === 0) {
       document.getElementById('day-tabs-bar').innerHTML = '';
@@ -532,10 +542,9 @@
       return;
     }
 
-    const todayKey = new Date().toISOString().slice(0, 10);
+    const todayKey = localDateKey(new Date());
     if (!activeDayKey || !dayMap[activeDayKey]) activeDayKey = days[0];
 
-    // Build day tabs
     const bar = document.getElementById('day-tabs-bar');
     bar.innerHTML = days.map(k => `
       <button class="day-tab ${k === activeDayKey ? 'active' : ''} ${k === todayKey ? 'today' : ''}"
@@ -552,6 +561,15 @@
     renderDailyTotals(allOrders);
   }
 
+  function switchTotalsTab(tab) {
+    activeTotalsTab = tab;
+    ['all','grocery','restaurant'].forEach(t => {
+      document.getElementById('totals-tab-' + t).classList.toggle('active', t === tab);
+      const panel = document.getElementById('totals-panel-' + t);
+      if (panel) panel.style.display = t === tab ? '' : 'none';
+    });
+  }
+
   function renderDayPanel(day) {
     const content = document.getElementById('daily-content');
     if (!day || day.entries.length === 0) {
@@ -559,29 +577,28 @@
       return;
     }
 
-    // Separate grocery and restaurant entries
-    const groceryEntries   = day.entries.filter(e => e.type === 'grocery');
+    const groceryEntries    = day.entries.filter(e => e.type === 'grocery');
     const restaurantEntries = day.entries.filter(e => e.type === 'restaurant');
-    const allEntries        = day.entries;
 
     function buildTotals(entries) {
       const totals = {};
       for (const e of entries) {
         for (const item of e.items) {
-          const key = item.item.toLowerCase().trim();
-          if (!totals[key]) totals[key] = { name: item.item, qty: 0 };
-          totals[key].qty += item.qty;
+          const k = item.item.toLowerCase().trim();
+          if (!totals[k]) totals[k] = { name: item.item, qty: 0 };
+          totals[k].qty += item.qty;
         }
       }
       return Object.values(totals).sort((a, b) => b.qty - a.qty);
     }
 
-    function totalsTable(entries, title, headerClass) {
+    function totalsTable(entries) {
       const totals = buildTotals(entries);
-      if (totals.length === 0) return '';
+      if (totals.length === 0) return '<div class="empty" style="margin-top:30px"><span>🥬</span>No orders in this category.</div>';
+      const grandQty = totals.reduce((s, t) => s + t.qty, 0);
       return `
-        <div class="totals-card ${headerClass === 'grand' ? 'grand-total-card' : ''}">
-          <div class="totals-card-header">${title} — ${totals.reduce((s, t) => s + t.qty, 0)} total items</div>
+        <p style="font-size:.85rem;color:#888;margin-bottom:12px">${totals.length} unique items · ${grandQty} total units</p>
+        <div class="totals-card">
           <table class="totals-table">
             ${totals.map(t => `<tr><td>${t.qty}</td><td>${esc(t.name)}</td></tr>`).join('')}
           </table>
@@ -591,13 +608,16 @@
     content.innerHTML = `
       <div class="totals-header">
         <h2>${day.label}</h2>
-        <span class="totals-subtitle">${day.entries.length} orders from ${new Set(day.entries.map(e => e.customer)).size} customers</span>
+        <span class="totals-subtitle">${day.entries.length} orders · ${new Set(day.entries.map(e => e.customer)).size} customers</span>
       </div>
-      <div class="totals-grid">
-        ${totalsTable(allEntries, '📦 All Orders Combined', 'grand')}
-        ${totalsTable(groceryEntries, '🛒 Grocery Totals', '')}
-        ${totalsTable(restaurantEntries, '🍽 Restaurant Totals', '')}
-      </div>`;
+      <div style="display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap">
+        <button id="totals-tab-all"        class="tab ${activeTotalsTab==='all'        ? 'active':''}" style="background:${activeTotalsTab==='all'        ?'#2d5a27':'#ddd'};color:${activeTotalsTab==='all'        ?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('all')">📦 Total</button>
+        <button id="totals-tab-grocery"    class="tab ${activeTotalsTab==='grocery'    ? 'active':''}" style="background:${activeTotalsTab==='grocery'    ?'#2d5a27':'#ddd'};color:${activeTotalsTab==='grocery'    ?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('grocery')">🛒 Grocery Total</button>
+        <button id="totals-tab-restaurant" class="tab ${activeTotalsTab==='restaurant' ? 'active':''}" style="background:${activeTotalsTab==='restaurant'?'#2d5a27':'#ddd'};color:${activeTotalsTab==='restaurant'?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('restaurant')">🍽 Restaurant Total</button>
+      </div>
+      <div id="totals-panel-all"        style="display:${activeTotalsTab==='all'        ?'':'none'}">${totalsTable(day.entries)}</div>
+      <div id="totals-panel-grocery"    style="display:${activeTotalsTab==='grocery'    ?'':'none'}">${totalsTable(groceryEntries)}</div>
+      <div id="totals-panel-restaurant" style="display:${activeTotalsTab==='restaurant' ?'':'none'}">${totalsTable(restaurantEntries)}</div>`;
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
