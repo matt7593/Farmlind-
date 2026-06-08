@@ -9,7 +9,10 @@ const { Pool } = require('pg');
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
+    ? { rejectUnauthorized: false }
+    : false,
+  connectionTimeoutMillis: 5000,
 });
 
 let slackTeamDomain = '';
@@ -21,26 +24,42 @@ let channelsCache = { restaurant: [], grocery: [] };
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
 
+let dbAvailable = false;
+
 async function initDb() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS store (
-      key   TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    )
-  `);
-  const o = await pool.query("SELECT value FROM store WHERE key = 'orders'");
-  const c = await pool.query("SELECT value FROM store WHERE key = 'channels'");
-  if (o.rows.length) ordersCache   = JSON.parse(o.rows[0].value);
-  if (c.rows.length) channelsCache = JSON.parse(c.rows[0].value);
-  console.log('Database loaded — orders:', Object.keys(ordersCache).length, 'customers');
+  if (!process.env.DATABASE_URL) {
+    console.log('No DATABASE_URL — using in-memory storage only.');
+    return;
+  }
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS store (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+    const o = await pool.query("SELECT value FROM store WHERE key = 'orders'");
+    const c = await pool.query("SELECT value FROM store WHERE key = 'channels'");
+    if (o.rows.length) ordersCache   = JSON.parse(o.rows[0].value);
+    if (c.rows.length) channelsCache = JSON.parse(c.rows[0].value);
+    dbAvailable = true;
+    console.log('Database connected — orders:', Object.keys(ordersCache).length, 'customers');
+  } catch (e) {
+    console.error('Database connection failed, running without persistence:', e.message);
+  }
 }
 
 async function dbSet(key, value) {
-  await pool.query(
-    `INSERT INTO store (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-    [key, JSON.stringify(value)]
-  );
+  if (!dbAvailable) return;
+  try {
+    await pool.query(
+      `INSERT INTO store (key, value) VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [key, JSON.stringify(value)]
+    );
+  } catch (e) {
+    console.error('DB write error:', e.message);
+  }
 }
 
 // ─── Storage helpers (synchronous via cache) ──────────────────────────────────
