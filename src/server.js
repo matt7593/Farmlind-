@@ -231,7 +231,8 @@ async function processMessage(message, channelId, client) {
 
   if (isAddOn) {
     const baseName = extractBaseName(customerName);
-    const baseOrders = orders[baseName];
+    const baseKey = findBaseKey(orders, baseName);
+    const baseOrders = baseKey ? orders[baseKey] : null;
 
     if (baseOrders && baseOrders.length > 0) {
       // Merge into the most recent order for that customer
@@ -245,7 +246,7 @@ async function processMessage(message, channelId, client) {
       mostRecent.ts_all = [...(mostRecent.ts_all || [mostRecent.ts]), ts];
       saveOrders(orders);
       broadcast();
-      console.log(`[${new Date().toLocaleTimeString()}] ADD-ON merged into ${baseName}: ${parsed.items.map(i => `${i.qty}x ${i.item}`).join(', ')}`);
+      console.log(`[${new Date().toLocaleTimeString()}] ADD-ON merged into ${baseKey}: ${parsed.items.map(i => `${i.qty}x ${i.item}`).join(', ')}`);
       return;
     }
   }
@@ -281,6 +282,12 @@ function extractBaseName(customerName) {
     .trim();
 }
 
+function findBaseKey(orders, baseName) {
+  // Case-insensitive lookup for the base customer key
+  const lower = baseName.toLowerCase();
+  return Object.keys(orders).find(k => k.toLowerCase() === lower);
+}
+
 function migrateAddOrders() {
   const orders = loadOrders();
   let changed = false;
@@ -289,9 +296,13 @@ function migrateAddOrders() {
     if (!/\badd\b/i.test(customerName)) continue;
 
     const baseName = extractBaseName(customerName);
-    if (!orders[baseName] || orders[baseName].length === 0) continue;
+    const baseKey = findBaseKey(orders, baseName);
+    if (!baseKey || orders[baseKey].length === 0) {
+      console.log(`No base customer found for "${customerName}" (looking for "${baseName}")`);
+      continue;
+    }
 
-    const mostRecent = orders[baseName][orders[baseName].length - 1];
+    const mostRecent = orders[baseKey][orders[baseKey].length - 1];
 
     for (const addOrder of orders[customerName]) {
       for (const newItem of addOrder.items) {
@@ -304,7 +315,7 @@ function migrateAddOrders() {
 
     delete orders[customerName];
     changed = true;
-    console.log(`Migrated "add" orders from "${customerName}" into "${baseName}"`);
+    console.log(`Migrated "${customerName}" into "${baseKey}"`);
   }
 
   if (changed) saveOrders(orders);
