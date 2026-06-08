@@ -283,9 +283,16 @@ function extractBaseName(customerName) {
 }
 
 function findBaseKey(orders, baseName) {
-  // Case-insensitive lookup for the base customer key
   const lower = baseName.toLowerCase();
-  return Object.keys(orders).find(k => k.toLowerCase() === lower);
+  const keys = Object.keys(orders).filter(k => !/\badd\b/i.test(k)); // exclude other "add" entries
+
+  // 1. Exact match (case-insensitive)
+  const exact = keys.find(k => k.toLowerCase() === lower);
+  if (exact) return exact;
+
+  // 2. Partial match — base name is contained in customer name (e.g. "mangia" matches "mangia pizza")
+  const partial = keys.find(k => k.toLowerCase().includes(lower) || lower.includes(k.toLowerCase()));
+  return partial || null;
 }
 
 function migrateAddOrders() {
