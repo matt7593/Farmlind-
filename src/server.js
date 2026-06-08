@@ -244,6 +244,8 @@ async function processMessage(message, channelId, client) {
       if (!mostRecent.slackLinks) mostRecent.slackLinks = [mostRecent.slackLink].filter(Boolean);
       if (slackLink && !mostRecent.slackLinks.includes(slackLink)) mostRecent.slackLinks.push(slackLink);
       mostRecent.ts_all = [...(mostRecent.ts_all || [mostRecent.ts]), ts];
+      // Remove the empty "add" entry we created above before saving
+      if (orders[customerName] && orders[customerName].length === 0) delete orders[customerName];
       saveOrders(orders);
       broadcast();
       console.log(`[${new Date().toLocaleTimeString()}] ADD-ON merged into ${baseKey}: ${parsed.items.map(i => `${i.qty}x ${i.item}`).join(', ')}`);
