@@ -527,9 +527,20 @@
     for (const [customer, orderList] of Object.entries(orders)) {
       for (const order of orderList) {
         const d   = new Date(order.timestamp);
-        const key = localDateKey(d);
-        const label = d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-        if (!dayMap[key]) dayMap[key] = { label, key, entries: [] };
+        let key   = localDateKey(d);
+
+        // Merge Sunday orders into the following Monday
+        if (d.getDay() === 0) {
+          const monday = new Date(d);
+          monday.setDate(monday.getDate() + 1);
+          key = localDateKey(monday);
+          const mondayLabel = monday.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+          if (!dayMap[key]) dayMap[key] = { label: mondayLabel, key, entries: [] };
+        } else {
+          const label = d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+          if (!dayMap[key]) dayMap[key] = { label, key, entries: [] };
+        }
+
         dayMap[key].entries.push({ customer, items: order.items, type: order.type || 'unknown' });
       }
     }
