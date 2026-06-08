@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { App } = require('@slack/bolt');
 const express = require('express');
+const path = require('path');
 const https = require('https');
 const Anthropic = require('@anthropic-ai/sdk');
 const { Pool } = require('pg');
