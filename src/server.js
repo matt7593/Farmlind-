@@ -335,13 +335,23 @@ async function backfillToday(client) {
     return;
   }
 
+  // Collect all messages first, then process oldest-first so "add" orders
+  // are always processed after their base customer order exists
+  const allMessages = [];
   for (const channel of channels) {
     try {
       const history = await client.conversations.history({ channel: channel.id, oldest, limit: 200 });
       for (const msg of (history.messages || [])) {
-        await processMessage(msg, channel.id, client);
+        allMessages.push({ msg, channelId: channel.id });
       }
     } catch { /* skip channels bot can't access */ }
+  }
+
+  // Sort oldest first (ts is a unix timestamp string)
+  allMessages.sort((a, b) => parseFloat(a.msg.ts) - parseFloat(b.msg.ts));
+
+  for (const { msg, channelId } of allMessages) {
+    await processMessage(msg, channelId, client);
   }
 
   console.log(`Backfill complete — scanned ${channels.length} channels.`);
