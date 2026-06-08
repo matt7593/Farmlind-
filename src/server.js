@@ -230,8 +230,7 @@ async function processMessage(message, channelId, client) {
   const isAddOn = /\badd\b/i.test(customerName);
 
   if (isAddOn) {
-    // Strip "add" from name to find the base customer (e.g. "Farmsview add" → "Farmsview")
-    const baseName = customerName.replace(/\s*\badd\b\s*/i, '').trim();
+    const baseName = extractBaseName(customerName);
     const baseOrders = orders[baseName];
 
     if (baseOrders && baseOrders.length > 0) {
@@ -273,6 +272,15 @@ async function processMessage(message, channelId, client) {
 
 // ─── One-time migration: merge existing "add" orders into base customers ───────
 
+function extractBaseName(customerName) {
+  // Handle "Add to Farmingdale" → "Farmingdale"
+  // Handle "Farmingdale add" → "Farmingdale"
+  return customerName
+    .replace(/^\s*add\s+to\s+/i, '')   // strip leading "add to"
+    .replace(/\s*\badd\b\s*$/i, '')    // strip trailing "add"
+    .trim();
+}
+
 function migrateAddOrders() {
   const orders = loadOrders();
   let changed = false;
@@ -280,7 +288,7 @@ function migrateAddOrders() {
   for (const customerName of Object.keys(orders)) {
     if (!/\badd\b/i.test(customerName)) continue;
 
-    const baseName = customerName.replace(/\s*\badd\b\s*/i, '').trim();
+    const baseName = extractBaseName(customerName);
     if (!orders[baseName] || orders[baseName].length === 0) continue;
 
     const mostRecent = orders[baseName][orders[baseName].length - 1];
