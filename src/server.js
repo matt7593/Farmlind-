@@ -1,35 +1,60 @@
 require('dotenv').config();
 const { App } = require('@slack/bolt');
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const https = require('https');
 const Anthropic = require('@anthropic-ai/sdk');
-
-const ORDERS_FILE   = path.join(__dirname, '..', 'orders.json');
-const CHANNELS_FILE = path.join(__dirname, '..', 'channels.json');
+const { Pool } = require('pg');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+});
 
-let slackTeamDomain = ''; // e.g. "farmlindproduce" → used to build slack message links
+let slackTeamDomain = '';
 
-// ─── Storage helpers ──────────────────────────────────────────────────────────
+// ─── In-memory cache (loaded from DB on startup) ──────────────────────────────
 
-function loadOrders() {
-  if (!fs.existsSync(ORDERS_FILE)) return {};
-  try { return JSON.parse(fs.readFileSync(ORDERS_FILE, 'utf8')); } catch { return {}; }
+let ordersCache   = {};
+let channelsCache = { restaurant: [], grocery: [] };
+
+// ─── DB helpers ───────────────────────────────────────────────────────────────
+
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS store (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
+  const o = await pool.query("SELECT value FROM store WHERE key = 'orders'");
+  const c = await pool.query("SELECT value FROM store WHERE key = 'channels'");
+  if (o.rows.length) ordersCache   = JSON.parse(o.rows[0].value);
+  if (c.rows.length) channelsCache = JSON.parse(c.rows[0].value);
+  console.log('Database loaded — orders:', Object.keys(ordersCache).length, 'customers');
 }
+
+async function dbSet(key, value) {
+  await pool.query(
+    `INSERT INTO store (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [key, JSON.stringify(value)]
+  );
+}
+
+// ─── Storage helpers (synchronous via cache) ──────────────────────────────────
+
+function loadOrders()   { return ordersCache; }
+function loadChannels() { return channelsCache; }
 
 function saveOrders(orders) {
-  fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
-}
-
-function loadChannels() {
-  try { return JSON.parse(fs.readFileSync(CHANNELS_FILE, 'utf8')); } catch { return { restaurant: [], grocery: [] }; }
+  ordersCache = orders;
+  dbSet('orders', orders).catch(e => console.error('DB write error (orders):', e));
 }
 
 function saveChannels(ch) {
-  fs.writeFileSync(CHANNELS_FILE, JSON.stringify(ch, null, 2));
+  channelsCache = ch;
+  dbSet('channels', ch).catch(e => console.error('DB write error (channels):', e));
 }
 
 function typeForChannel(channelId) {
@@ -451,6 +476,7 @@ const PORT = process.env.PORT || 3000;
 web.listen(PORT, () => console.log(`Dashboard → http://localhost:${PORT}`));
 
 (async () => {
+  await initDb();
   await slackApp.start();
   console.log('Slack bot connected — listening for orders and images...');
   try {
