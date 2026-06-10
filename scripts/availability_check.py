@@ -17,7 +17,7 @@ GMAIL_CLIENT_ID = os.environ["GMAIL_CLIENT_ID"]
 GMAIL_CLIENT_SECRET = os.environ["GMAIL_CLIENT_SECRET"]
 GMAIL_REFRESH_TOKEN = os.environ["GMAIL_REFRESH_TOKEN_1"]
 
-NOTIFY_EMAILS = ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
+NOTIFY_EMAILS = ["matt@farmlindproduce.com", "farmlindproduce@gmail.com", "babbe331@gmail.com"]
 CHANNEL_NAME = "availability-list-changes"
 REFERENCE_FILE = os.path.join(os.path.dirname(__file__), "product_reference.xlsx")
 
