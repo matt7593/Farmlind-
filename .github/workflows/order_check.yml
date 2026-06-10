@@ -1,0 +1,29 @@
+name: Matt Order Check
+
+on:
+  schedule:
+    # Every 5 min, 8pm–midnight ET every day (00:00–04:00 UTC)
+    - cron: '*/5 0,1,2,3 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-orders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic openpyxl python-docx
+
+      - name: Run order check
+        env:
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_REFRESH_TOKEN_1: ${{ secrets.GMAIL_REFRESH_TOKEN_1 }}
+          GMAIL_REFRESH_TOKEN_2: ${{ secrets.GMAIL_REFRESH_TOKEN_2 }}
+        run: python scripts/check_orders.py
