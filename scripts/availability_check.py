@@ -5,6 +5,7 @@ import urllib.parse
 import io
 import os
 from datetime import datetime
+from collections import defaultdict
 
 import anthropic
 import openpyxl
@@ -57,6 +58,15 @@ def fetch_channel_history(channel_id, limit=200):
     return data.get("messages", [])
 
 
+def get_user_display_name(user_id):
+    try:
+        data = slack_get("/users.info", {"user": user_id})
+        profile = data.get("user", {}).get("profile", {})
+        return profile.get("display_name") or profile.get("real_name") or user_id
+    except Exception:
+        return user_id
+
+
 def download_slack_file(url):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"})
     with urllib.request.urlopen(req) as resp:
@@ -66,27 +76,34 @@ def download_slack_file(url):
 # ── Claude helpers ─────────────────────────────────────────────────────────────
 
 EXTRACT_PROMPT = """
-You are parsing a produce availability/price list. Extract every item that has a price.
+You are parsing a produce availability/price list from a vendor.
 
-Return ONLY a JSON array. Each element:
+Extract:
+1. The vendor/company name (look for it in the document header, footer, or letterhead). If you cannot find a company name, return "Unknown Vendor".
+2. Every item that has a price.
+
+Return ONLY a JSON object in this exact format:
 {
-  "item": "<produce item name, normalized>",
-  "price": "<price as a string, e.g. '1.25' or '1.25/lb'>",
-  "unit": "<unit if present, e.g. 'lb', 'each', 'case', 'bunch', blank if unknown>",
-  "date": "<date if mentioned in the document, YYYY-MM-DD format, or blank>"
+  "vendor": "<company name>",
+  "items": [
+    {
+      "item": "<produce item name, normalized to Title Case>",
+      "price": <price as a number, e.g. 1.25>,
+      "unit": "<unit if present, e.g. 'lb', 'each', 'case', 'bunch', or blank>"
+    }
+  ]
 }
 
 Rules:
-- Normalize item names (title case, remove extra spaces).
-- Keep the price exactly as shown, no currency symbol.
-- If no date appears in the document, leave date blank.
+- Normalize item names to Title Case, remove extra spaces.
+- Price must be a number only — no $ symbol, no slashes.
+- If a price range is given (e.g. 1.00-1.50), use the lower number.
 - Do NOT include items with no price.
 - Return valid JSON only — no markdown, no explanation.
 """
 
 
-def extract_prices_from_content(content_blocks, message_ts):
-    msg_date = datetime.fromtimestamp(float(message_ts)).strftime("%Y-%m-%d")
+def extract_prices_from_content(content_blocks, sender_name):
     result = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=4096,
@@ -97,35 +114,23 @@ def extract_prices_from_content(content_blocks, message_ts):
     )
     raw = result.content[0].text.strip()
     try:
-        items = json.loads(raw)
+        data = json.loads(raw)
     except json.JSONDecodeError:
-        # Try to salvage a partial JSON array
-        start, end = raw.find("["), raw.rfind("]")
+        start, end = raw.find("{"), raw.rfind("}")
         if start != -1 and end != -1:
             try:
-                items = json.loads(raw[start:end + 1])
+                data = json.loads(raw[start:end + 1])
             except Exception:
                 print(f"  Could not parse Claude response: {raw[:200]}")
-                return []
+                return None
         else:
-            return []
+            return None
 
-    # Fill in message date where the document had none
-    for item in items:
-        if not item.get("date"):
-            item["date"] = msg_date
-    return items
+    # If Claude couldn't find a vendor name, fall back to the Slack sender
+    if not data.get("vendor") or data["vendor"] == "Unknown Vendor":
+        data["vendor"] = sender_name
 
-
-def parse_price_float(price_str):
-    """Return the numeric part of a price string as float, or None."""
-    if not price_str:
-        return None
-    cleaned = price_str.replace("$", "").split("/")[0].strip()
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
+    return data
 
 
 # ── Gmail helpers ──────────────────────────────────────────────────────────────
@@ -142,12 +147,12 @@ def get_access_token():
         return json.loads(resp.read())["access_token"]
 
 
-def send_spreadsheet_email(access_token, xlsx_bytes, subject, body_text):
+def send_email_with_attachment(access_token, subject, body_text, xlsx_bytes):
     attachment_b64 = base64.b64encode(xlsx_bytes).decode()
-    filename = f"availability_comparison_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    filename = f"availability_{datetime.now().strftime('%Y%m%d')}.xlsx"
     boundary = "==farmlind_boundary=="
-
     recipients = ", ".join(NOTIFY_EMAILS)
+
     mime = (
         f"From: matt@farmlindproduce.com\r\n"
         f"To: {recipients}\r\n"
@@ -175,100 +180,71 @@ def send_spreadsheet_email(access_token, xlsx_bytes, subject, body_text):
         return json.loads(resp.read())
 
 
+# ── Email body builder ─────────────────────────────────────────────────────────
+
+def build_email_body(item_vendor_map, today_str):
+    lines = [
+        f"Availability Price Comparison — {today_str}",
+        "=" * 50,
+        "",
+        "Items are sorted alphabetically.",
+        "Vendors listed cheapest to most expensive.",
+        "",
+        "=" * 50,
+        "",
+    ]
+
+    for item in sorted(item_vendor_map.keys()):
+        vendors = item_vendor_map[item]  # list of (vendor, price, unit)
+        vendors_sorted = sorted(vendors, key=lambda x: x[1])
+
+        prices = [v[1] for v in vendors_sorted]
+        unit = vendors_sorted[0][2] if vendors_sorted[0][2] else ""
+        unit_str = f"/{unit}" if unit else ""
+
+        low = min(prices)
+        high = max(prices)
+        cheapest_vendor = vendors_sorted[0][0]
+
+        lines.append(f"  {item.upper()}")
+        if low == high:
+            lines.append(f"  Price: ${low:.2f}{unit_str} (all vendors same price)")
+        else:
+            lines.append(f"  Range: ${low:.2f} - ${high:.2f}{unit_str}  |  Cheapest: {cheapest_vendor}")
+        lines.append("")
+
+        for vendor, price, unit in vendors_sorted:
+            u = f"/{unit}" if unit else ""
+            lines.append(f"    ${price:.2f}{u}  —  {vendor}")
+
+        lines.append("")
+        lines.append("-" * 50)
+        lines.append("")
+
+    lines.append("— Farmlind Availability Bot")
+    return "\n".join(lines)
+
+
 # ── Spreadsheet builder ────────────────────────────────────────────────────────
 
-GREEN_FILL = PatternFill("solid", fgColor="C6EFCE")
-RED_FILL   = PatternFill("solid", fgColor="FFC7CE")
+GREEN_FILL  = PatternFill("solid", fgColor="C6EFCE")
 YELLOW_FILL = PatternFill("solid", fgColor="FFEB9C")
+RED_FILL    = PatternFill("solid", fgColor="FFC7CE")
 HEADER_FILL = PatternFill("solid", fgColor="4472C4")
 HEADER_FONT = Font(bold=True, color="FFFFFF")
-BOLD = Font(bold=True)
-
 THIN_BORDER = Border(
     left=Side(style="thin"), right=Side(style="thin"),
     top=Side(style="thin"), bottom=Side(style="thin")
 )
 
 
-def build_spreadsheet(price_data):
-    """
-    price_data: list of {item, price, unit, date, vendor_hint}
-    Groups by item name, finds the two most recent distinct dates, computes change.
-    Returns xlsx bytes.
-    """
-    # Sort by date descending
-    price_data.sort(key=lambda x: x.get("date", ""), reverse=True)
-
-    # Build: item -> list of (date, price_str, price_float)
-    item_history: dict[str, list] = {}
-    for row in price_data:
-        item = row["item"]
-        date = row.get("date", "")
-        price_str = row.get("price", "")
-        price_f = parse_price_float(price_str)
-        unit = row.get("unit", "")
-        if item not in item_history:
-            item_history[item] = []
-        item_history[item].append((date, price_str, price_f, unit))
-
-    # For each item, pick the two most recent distinct dates
-    comparison_rows = []
-    for item, entries in sorted(item_history.items()):
-        # Sort by date desc
-        entries.sort(key=lambda x: x[0], reverse=True)
-        # Get entries for the most recent date
-        dates_seen = []
-        by_date = {}
-        for date, price_str, price_f, unit in entries:
-            if date not in by_date:
-                by_date[date] = (price_str, price_f, unit)
-                dates_seen.append(date)
-
-        if not dates_seen:
-            continue
-
-        latest_date = dates_seen[0]
-        latest_price_str, latest_price_f, latest_unit = by_date[latest_date]
-
-        if len(dates_seen) >= 2:
-            prev_date = dates_seen[1]
-            prev_price_str, prev_price_f, prev_unit = by_date[prev_date]
-        else:
-            prev_date = ""
-            prev_price_str = ""
-            prev_price_f = None
-            prev_unit = latest_unit
-
-        # Compute change
-        if latest_price_f is not None and prev_price_f is not None:
-            change = latest_price_f - prev_price_f
-            change_pct = (change / prev_price_f * 100) if prev_price_f else 0
-        else:
-            change = None
-            change_pct = None
-
-        unit_display = latest_unit or prev_unit
-
-        comparison_rows.append({
-            "item": item,
-            "unit": unit_display,
-            "prev_date": prev_date,
-            "prev_price": prev_price_str,
-            "latest_date": latest_date,
-            "latest_price": latest_price_str,
-            "change": change,
-            "change_pct": change_pct,
-        })
-
-    # Sort: biggest price increases first, then alphabetical
-    comparison_rows.sort(key=lambda x: (-(x["change"] or 0), x["item"]))
-
+def build_spreadsheet(item_vendor_map):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Price Comparison"
 
-    headers = ["Item", "Unit", "Previous Date", "Previous Price", "Latest Date", "Latest Price", "$ Change", "% Change", "Status"]
-    col_widths = [30, 10, 14, 14, 14, 14, 10, 10, 12]
+    headers = ["Item", "Price Range", "Cheapest Option", "Vendor", "Price", "Unit"]
+    col_widths = [28, 16, 22, 28, 12, 10]
 
     for col, (h, w) in enumerate(zip(headers, col_widths), 1):
         cell = ws.cell(row=1, column=col, value=h)
@@ -279,48 +255,63 @@ def build_spreadsheet(price_data):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
 
     ws.row_dimensions[1].height = 18
-
-    for row_idx, row in enumerate(comparison_rows, 2):
-        change = row["change"]
-        change_pct = row["change_pct"]
-
-        if change is not None:
-            if change > 0:
-                fill = RED_FILL
-                status = "UP"
-            elif change < 0:
-                fill = GREEN_FILL
-                status = "DOWN"
-            else:
-                fill = None
-                status = "SAME"
-        else:
-            fill = YELLOW_FILL
-            status = "NEW" if not row["prev_price"] else "—"
-
-        values = [
-            row["item"],
-            row["unit"],
-            row["prev_date"],
-            row["prev_price"],
-            row["latest_date"],
-            row["latest_price"],
-            f"+{change:.2f}" if change and change > 0 else (f"{change:.2f}" if change is not None else ""),
-            f"+{change_pct:.1f}%" if change_pct and change_pct > 0 else (f"{change_pct:.1f}%" if change_pct is not None else ""),
-            status,
-        ]
-
-        for col, val in enumerate(values, 1):
-            cell = ws.cell(row=row_idx, column=col, value=val)
-            cell.border = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center" if col > 1 else "left")
-            if fill:
-                cell.fill = fill
-            if col in (7, 8) and change:
-                cell.font = Font(bold=True, color="9C0006" if change > 0 else "375623")
-
-    # Freeze header row
     ws.freeze_panes = "A2"
+
+    row_idx = 2
+    for item in sorted(item_vendor_map.keys()):
+        vendors = sorted(item_vendor_map[item], key=lambda x: x[1])
+        prices = [v[1] for v in vendors]
+        low, high = min(prices), max(prices)
+        cheapest_vendor = vendors[0][0]
+        unit = vendors[0][2] if vendors[0][2] else ""
+        price_range = f"${low:.2f} - ${high:.2f}" if low != high else f"${low:.2f}"
+
+        item_start_row = row_idx
+
+        for i, (vendor, price, vunit) in enumerate(vendors):
+            u = vunit or unit
+
+            # Item and range only on first row of the group
+            if i == 0:
+                ws.cell(row=row_idx, column=1, value=item).font = Font(bold=True)
+                ws.cell(row=row_idx, column=2, value=price_range)
+                ws.cell(row=row_idx, column=3, value=cheapest_vendor)
+
+            ws.cell(row=row_idx, column=4, value=vendor)
+            ws.cell(row=row_idx, column=5, value=f"${price:.2f}")
+            ws.cell(row=row_idx, column=6, value=u)
+
+            # Color: green = cheapest, red = most expensive, yellow = middle
+            if price == low:
+                fill = GREEN_FILL
+            elif price == high and low != high:
+                fill = RED_FILL
+            else:
+                fill = YELLOW_FILL
+
+            for col in range(1, 7):
+                cell = ws.cell(row=row_idx, column=col)
+                cell.border = THIN_BORDER
+                cell.alignment = Alignment(horizontal="center" if col > 1 else "left")
+                if col >= 4:
+                    cell.fill = fill
+
+            row_idx += 1
+
+        # Merge item/range/cheapest cells across the group rows
+        if len(vendors) > 1:
+            for col in (1, 2, 3):
+                ws.merge_cells(
+                    start_row=item_start_row, start_column=col,
+                    end_row=row_idx - 1, end_column=col
+                )
+                ws.cell(row=item_start_row, column=col).alignment = Alignment(
+                    horizontal="left" if col == 1 else "center",
+                    vertical="center"
+                )
+
+        # Empty spacer row between items
+        row_idx += 1
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -338,45 +329,40 @@ def main():
     messages = fetch_channel_history(channel_id, limit=200)
     print(f"Fetched {len(messages)} messages")
 
-    all_price_data = []
+    # item -> list of (vendor, price, unit)
+    item_vendor_map = defaultdict(list)
 
     for msg in messages:
         ts = msg.get("ts", "0")
-        msg_date = datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
+        user_id = msg.get("user", "")
+        sender_name = get_user_display_name(user_id) if user_id else "Unknown"
+
         content_blocks = []
 
-        # Plain text body
         text = msg.get("text", "").strip()
         if text:
             content_blocks.append({"type": "text", "text": text})
 
-        # File attachments
         for f in msg.get("files", []):
             mime = f.get("mimetype", "")
             url = f.get("url_private_download") or f.get("url_private")
             filename = f.get("name", "")
             if not url:
                 continue
-            print(f"  Downloading file: {filename} ({mime})")
+            print(f"  Downloading: {filename} ({mime})")
             try:
                 file_bytes = download_slack_file(url)
                 if "pdf" in mime or filename.lower().endswith(".pdf"):
                     content_blocks.append({
                         "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "application/pdf",
-                            "data": base64.b64encode(file_bytes).decode()
-                        }
+                        "source": {"type": "base64", "media_type": "application/pdf",
+                                   "data": base64.b64encode(file_bytes).decode()}
                     })
                 elif mime.startswith("image/"):
                     content_blocks.append({
                         "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": mime,
-                            "data": base64.b64encode(file_bytes).decode()
-                        }
+                        "source": {"type": "base64", "media_type": mime,
+                                   "data": base64.b64encode(file_bytes).decode()}
                     })
                 elif filename.lower().endswith((".xlsx", ".xls")):
                     import openpyxl as _oxl
@@ -388,44 +374,49 @@ def main():
                     )
                     content_blocks.append({"type": "text", "text": text_content})
             except Exception as e:
-                print(f"  File download/parse error: {e}")
+                print(f"  File error: {e}")
 
         if not content_blocks:
             continue
 
-        print(f"  Parsing message from {msg_date}...")
+        msg_date = datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
+        print(f"  Parsing message from {sender_name} ({msg_date})...")
         try:
-            items = extract_prices_from_content(content_blocks, ts)
-            print(f"    Extracted {len(items)} items")
-            all_price_data.extend(items)
+            result = extract_prices_from_content(content_blocks, sender_name)
+            if not result:
+                continue
+            vendor = result.get("vendor", sender_name)
+            items = result.get("items", [])
+            print(f"    Vendor: {vendor} — {len(items)} items")
+            for entry in items:
+                item = entry.get("item", "").strip()
+                price = entry.get("price")
+                unit = entry.get("unit", "") or ""
+                if item and price is not None:
+                    try:
+                        item_vendor_map[item].append((vendor, float(price), unit))
+                    except (ValueError, TypeError):
+                        pass
         except Exception as e:
             print(f"  Parse error: {e}")
 
-    if not all_price_data:
+    if not item_vendor_map:
         print("No price data found in channel — nothing to send.")
         return
 
-    print(f"\nTotal items extracted: {len(all_price_data)}")
-    print("Building spreadsheet...")
-    xlsx_bytes = build_spreadsheet(all_price_data)
+    print(f"\nTotal unique items: {len(item_vendor_map)}")
 
     today_str = datetime.now().strftime("%B %d, %Y")
     subject = f"Availability Price Comparison — {today_str}"
-    body = (
-        f"Hi Matt,\n\n"
-        f"Here is the latest availability price comparison from #{CHANNEL_NAME}.\n\n"
-        f"The spreadsheet shows each item's most recent price vs. the previous price:\n"
-        f"  - RED   = price went UP\n"
-        f"  - GREEN = price went DOWN\n"
-        f"  - YELLOW = new item (no previous price to compare)\n\n"
-        f"Items are sorted by largest price increase first.\n\n"
-        f"— Farmlind Availability Bot"
-    )
+
+    print("Building email and spreadsheet...")
+    body = build_email_body(item_vendor_map, today_str)
+    xlsx_bytes = build_spreadsheet(item_vendor_map)
 
     print("Sending email...")
     token = get_access_token()
-    send_spreadsheet_email(token, xlsx_bytes, subject, body)
-    print("Done — spreadsheet sent.")
+    send_email_with_attachment(token, subject, body, xlsx_bytes)
+    print("Done — email sent with spreadsheet attached.")
 
 
 if __name__ == "__main__":
