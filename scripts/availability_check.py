@@ -19,8 +19,59 @@ GMAIL_REFRESH_TOKEN = os.environ["GMAIL_REFRESH_TOKEN_1"]
 
 NOTIFY_EMAILS = ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 CHANNEL_NAME = "availability-list-changes"
+REFERENCE_FILE = os.path.join(os.path.dirname(__file__), "product_reference.xlsx")
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+# ── Product reference loader ───────────────────────────────────────────────────
+
+def load_product_reference():
+    """
+    Load known product names from the internal availability spreadsheet.
+    Returns a deduplicated list of product name strings Claude can use
+    to map vendor abbreviations to real names.
+    """
+    if not os.path.exists(REFERENCE_FILE):
+        print("  No product_reference.xlsx found — skipping reference lookup")
+        return []
+
+    names = set()
+    try:
+        wb = openpyxl.load_workbook(REFERENCE_FILE, read_only=True, data_only=True)
+
+        # List sheet col A — full product names used internally
+        if "List" in wb.sheetnames:
+            ws = wb["List"]
+            for row in ws.iter_rows(min_col=1, max_col=1, values_only=True):
+                val = row[0]
+                if val and isinstance(val, str):
+                    val = val.strip().replace("\xa0", "")
+                    # Skip section headers (all caps) and empty
+                    if val and not val.isupper():
+                        names.add(val)
+
+            # Reserva Variants col 35 (AJ) — official system names
+            for row in ws.iter_rows(min_col=35, max_col=35, values_only=True):
+                val = row[0]
+                if val and isinstance(val, str):
+                    val = val.strip()
+                    if val and val not in ("Reserva names",):
+                        names.add(val)
+
+        # Product IDs sheet — display_name column
+        if "Product IDs" in wb.sheetnames:
+            ws2 = wb["Product IDs"]
+            for row in ws2.iter_rows(min_col=2, max_col=2, values_only=True):
+                val = row[0]
+                if val and isinstance(val, str) and val.strip() != "display_name":
+                    names.add(val.strip())
+
+    except Exception as e:
+        print(f"  Warning: could not load product reference: {e}")
+
+    print(f"  Loaded {len(names)} product names from reference file")
+    return sorted(names)
 
 
 # ── Slack helpers ──────────────────────────────────────────────────────────────
@@ -75,41 +126,52 @@ def download_slack_file(url):
 
 # ── Claude helpers ─────────────────────────────────────────────────────────────
 
-EXTRACT_PROMPT = """
-You are parsing a produce availability/price list from a vendor.
+def build_extract_prompt(product_names):
+    reference_section = ""
+    if product_names:
+        # Include a sample of names to keep the prompt from being enormous
+        sample = product_names[:300]
+        reference_section = (
+            "\n\nKNOWN PRODUCT NAMES (use these to resolve abbreviations and shorthand):\n"
+            + "\n".join(f"- {n}" for n in sample)
+            + "\n\nWhen you see an abbreviation or short name in the vendor list, match it to the "
+            "closest known product name above and use that as the item name in your output."
+        )
+
+    return f"""You are parsing a produce availability/price list from a vendor.
 
 Extract:
 1. The vendor/company name (look for it in the document header, footer, or letterhead). If you cannot find a company name, return "Unknown Vendor".
 2. Every item that has a price.
 
 Return ONLY a JSON object in this exact format:
-{
+{{
   "vendor": "<company name>",
   "items": [
-    {
+    {{
       "item": "<produce item name, normalized to Title Case>",
       "price": <price as a number, e.g. 1.25>,
       "unit": "<unit if present, e.g. 'lb', 'each', 'case', 'bunch', or blank>"
-    }
+    }}
   ]
-}
+}}
 
 Rules:
 - Normalize item names to Title Case, remove extra spaces.
 - Price must be a number only — no $ symbol, no slashes.
 - If a price range is given (e.g. 1.00-1.50), use the lower number.
 - Do NOT include items with no price.
-- Return valid JSON only — no markdown, no explanation.
-"""
+- Return valid JSON only — no markdown, no explanation.{reference_section}"""
 
 
-def extract_prices_from_content(content_blocks, sender_name):
+def extract_prices_from_content(content_blocks, sender_name, product_names):
+    prompt = build_extract_prompt(product_names)
     result = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=4096,
         messages=[{
             "role": "user",
-            "content": content_blocks + [{"type": "text", "text": EXTRACT_PROMPT}]
+            "content": content_blocks + [{"type": "text", "text": prompt}]
         }]
     )
     raw = result.content[0].text.strip()
@@ -323,6 +385,9 @@ def build_spreadsheet(item_vendor_map):
 def main():
     print("Fetching availability price data from Slack...")
 
+    print("Loading product reference...")
+    product_names = load_product_reference()
+
     channel_id = find_channel_id(CHANNEL_NAME)
     print(f"Found channel #{CHANNEL_NAME}: {channel_id}")
 
@@ -382,7 +447,7 @@ def main():
         msg_date = datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
         print(f"  Parsing message from {sender_name} ({msg_date})...")
         try:
-            result = extract_prices_from_content(content_blocks, sender_name)
+            result = extract_prices_from_content(content_blocks, sender_name, product_names)
             if not result:
                 continue
             vendor = result.get("vendor", sender_name)
