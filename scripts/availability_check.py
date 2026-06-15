@@ -159,7 +159,7 @@ Return ONLY a JSON object:
   "vendor": "<vendor name or null>",
   "items": [
     {{
-      "item": "<produce item name in Title Case>",
+      "item": "<produce item name including size/count/grade in Title Case>",
       "price": <price as a number only, no $ sign>,
       "unit": "<unit if present e.g. lb, case, bunch, or blank>"
     }}
@@ -167,6 +167,8 @@ Return ONLY a JSON object:
 }}
 
 Rules:
+- ALWAYS include size, count, or grade in the item name when present (e.g. "Grapefruit 36ct", "Lime 230ct", "Fuji Apple 72ct", "Garlic 5 Pack", "Peach 2.5 Inch"). This is critical so different sizes of the same product appear as separate line items.
+- If the same item appears multiple times at different prices, they must have different sizes/grades in their names. Never list the same item name twice from the same vendor.
 - Price must be a number only — no $ symbol, no slashes.
 - If a price range is given (e.g. 1.00-1.50), use the lower number.
 - Do NOT include items with no price.
