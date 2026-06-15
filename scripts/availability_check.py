@@ -109,6 +109,19 @@ def fetch_channel_history(channel_id, limit=200):
     return data.get("messages", [])
 
 
+def has_messages_today(messages):
+    """Return True if any message was posted today (ET)."""
+    from datetime import timezone, timedelta
+    et = timezone(timedelta(hours=-4))  # EDT; use -5 for EST
+    today = datetime.now(et).date()
+    for msg in messages:
+        ts = float(msg.get("ts", 0))
+        msg_date = datetime.fromtimestamp(ts, tz=et).date()
+        if msg_date == today:
+            return True
+    return False
+
+
 def get_user_display_name(user_id):
     try:
         data = slack_get("/users.info", {"user": user_id})
@@ -452,6 +465,10 @@ def main():
 
     messages = fetch_channel_history(channel_id, limit=200)
     print(f"Fetched {len(messages)} messages")
+
+    if not os.environ.get("FORCE_SEND") and not has_messages_today(messages):
+        print("No new messages posted today — skipping email.")
+        return
 
     # item -> list of (vendor, price, unit)
     # Keys are normalized item names; values track (vendor, price, unit)
