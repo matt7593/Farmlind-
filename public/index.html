@@ -645,10 +645,10 @@
         <h2>${day.label}</h2>
         <span class="totals-subtitle">${day.entries.length} orders · ${new Set(day.entries.map(e => e.customer)).size} customers</span>
       </div>
-      <div style="display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap">
-        <button id="totals-tab-all"        class="tab ${activeTotalsTab==='all'        ? 'active':''}" style="background:${activeTotalsTab==='all'        ?'#2d5a27':'#ddd'};color:${activeTotalsTab==='all'        ?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('all')">📦 Total</button>
-        <button id="totals-tab-grocery"    class="tab ${activeTotalsTab==='grocery'    ? 'active':''}" style="background:${activeTotalsTab==='grocery'    ?'#2d5a27':'#ddd'};color:${activeTotalsTab==='grocery'    ?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('grocery')">🛒 Store Sale Orders Total</button>
-        <button id="totals-tab-restaurant" class="tab ${activeTotalsTab==='restaurant' ? 'active':''}" style="background:${activeTotalsTab==='restaurant'?'#2d5a27':'#ddd'};color:${activeTotalsTab==='restaurant'?'#fff':'#333'};border-radius:8px;padding:7px 18px;font-size:.85rem" onclick="switchTotalsTab('restaurant')">🍽 Restaurant Sale Orders Total</button>
+      <div style="display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap;background:#2d5a27;padding:8px 12px;border-radius:8px">
+        <button id="totals-tab-all"        class="tab ${activeTotalsTab==='all'        ? 'active':''}" onclick="switchTotalsTab('all')">📦 Total</button>
+        <button id="totals-tab-grocery"    class="tab ${activeTotalsTab==='grocery'    ? 'active':''}" onclick="switchTotalsTab('grocery')">🛒 Store Sale Orders Total</button>
+        <button id="totals-tab-restaurant" class="tab ${activeTotalsTab==='restaurant' ? 'active':''}" onclick="switchTotalsTab('restaurant')">🍽 Restaurant Sale Orders Total</button>
       </div>
       <div id="totals-panel-all"        style="display:${activeTotalsTab==='all'        ?'':'none'}">${totalsTable(day.entries)}</div>
       <div id="totals-panel-grocery"    style="display:${activeTotalsTab==='grocery'    ?'':'none'}">${totalsTable(groceryEntries)}</div>
