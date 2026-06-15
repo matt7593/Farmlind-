@@ -274,6 +274,27 @@ def collect_vendor_items(messages, keywords):
     return items
 
 
+def item_matches(prev_name, today_name):
+    """True if these two normalized item names refer to the same product, tolerant of
+    typos and minor spelling differences (e.g. 'oregeno' vs 'oregano')."""
+    import difflib
+    # Exact substring match (handles 'green bell' vs 'jumbo green bell')
+    if prev_name in today_name or today_name in prev_name:
+        return True
+    # Whole-string fuzzy match for typos
+    if difflib.SequenceMatcher(None, prev_name, today_name).ratio() >= 0.82:
+        return True
+    # Word-level fuzzy match: every word in the shorter name has a close match
+    # in the longer one (handles a typo inside a multi-word item)
+    short, long = sorted([prev_name.split(), today_name.split()], key=len)
+    if short and all(
+        any(difflib.SequenceMatcher(None, w, lw).ratio() >= 0.85 for lw in long)
+        for w in short
+    ):
+        return True
+    return False
+
+
 def normalize_items(items):
     """Ask Claude to return just the product names, no quantities."""
     response = claude.messages.create(
@@ -442,7 +463,7 @@ def main(override_date=None):
                 if name in seen:
                     continue
                 seen.add(name)
-                found = any(name in today_name or today_name in name for today_name in today_names)
+                found = any(item_matches(name, today_name) for today_name in today_names)
                 if not found:
                     missing.append(name)
 
