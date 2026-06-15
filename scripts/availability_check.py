@@ -396,24 +396,43 @@ import string
 
 SPECIALS_VENDORS = {"Sunday Specials", "Tuesday Specials", "Monday Specials", "Wednesday Specials"}
 
+ITEM_ALIASES = {
+    "strawberries": "Strawberry",
+    "peaches": "Peach",
+    "avocados": "Avocado",
+    "mangoes": "Mango",
+    "pineapples": "Pineapple",
+    "lemons": "Lemon",
+    "limes": "Lime",
+    "oranges": "Orange",
+    "grapes": "Grape",
+    "cherries": "Cherry",
+    "blueberries": "Blueberry",
+    "raspberries": "Raspberry",
+    "blackberries": "Blackberry",
+    "plums": "Plum",
+    "nectarines": "Nectarine",
+    "apricots": "Apricot",
+    "apples, fuji": "Fuji Apple",
+    "fuji": "Fuji Apple",
+    "apples fuji": "Fuji Apple",
+    "granny smith": "Granny Smith Apple",
+    "apples granny smith": "Granny Smith Apple",
+    "granny": "Granny Smith Apple",
+    "pears, bartlett": "Bartlett Pear",
+    "onions, sweet globe": "Sweet Globe Onion",
+    "oranges, navel": "Navel Orange",
+    "hass avocados": "Hass Avocado",
+}
+
 def normalize_item_name(name):
     """Normalize item names so minor variations map to the same key."""
-    # Remove punctuation except hyphens
     name = re.sub(r"[,\.\/\\]", " ", name)
-    # Collapse whitespace
     name = " ".join(name.split())
-    # Title case
-    name = name.title()
-    # Strip trailing 's' for common plurals (avocados→avocado, lemons→lemon)
-    # Only strip if word is longer than 4 chars to avoid breaking short words
-    words = name.split()
-    normalized = []
-    for w in words:
-        if len(w) > 4 and w.endswith("s") and not w.endswith("ss"):
-            normalized.append(w[:-1])
-        else:
-            normalized.append(w)
-    return " ".join(normalized)
+    lower = name.lower()
+    if lower in ITEM_ALIASES:
+        return ITEM_ALIASES[lower]
+    return name.title()
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -512,7 +531,9 @@ def main():
                         key = normalize_item_name(item)
                         if key not in item_display_name:
                             item_display_name[key] = item
-                        item_vendor_map[key].append((vendor, float(price), unit))
+                        entry = (vendor, float(price), unit)
+                        if entry not in item_vendor_map[key]:
+                            item_vendor_map[key].append(entry)
                     except (ValueError, TypeError):
                         pass
         except Exception as e:
