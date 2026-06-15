@@ -596,7 +596,7 @@
       for (const e of entries) {
         for (const item of e.items) {
           const k = item.item.toLowerCase().trim();
-          if (!totals[k]) totals[k] = { name: item.item, qty: 0 };
+          if (!totals[k]) totals[k] = { name: item.item, qty: 0, category: item.category || 'Other' };
           totals[k].qty += item.qty;
         }
       }
@@ -607,13 +607,32 @@
       const totals = buildTotals(entries);
       if (totals.length === 0) return '<div class="empty" style="margin-top:30px"><span>🥬</span>No orders in this category.</div>';
       const grandQty = totals.reduce((s, t) => s + t.qty, 0);
+
+      // Group by category
+      const byCategory = {};
+      for (const t of totals) {
+        const cat = t.category || 'Other';
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push(t);
+      }
+      const catOrder = ['Tomatoes','Greens','Vegetables','Herbs & Spices','Fruit','Potatoes','Organic','Other'];
+      const sortedCats = Object.keys(byCategory).sort((a, b) => {
+        const ai = catOrder.indexOf(a), bi = catOrder.indexOf(b);
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+      });
+
       return `
         <p style="font-size:.85rem;color:#888;margin-bottom:12px">${totals.length} unique items · ${grandQty} total units</p>
-        <div class="totals-card">
-          <table class="totals-table">
-            ${totals.map(t => `<tr><td>${t.qty}</td><td>${esc(t.name)}</td></tr>`).join('')}
-          </table>
-        </div>`;
+        ${sortedCats.map(cat => `
+          <div style="margin-bottom:18px">
+            <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#5a8a50;margin-bottom:6px">${esc(cat)}</div>
+            <div class="totals-card">
+              <table class="totals-table">
+                ${byCategory[cat].map(t => `<tr><td>${t.qty}</td><td>${esc(t.name)}</td></tr>`).join('')}
+              </table>
+            </div>
+          </div>
+        `).join('')}`;
     }
 
     content.innerHTML = `

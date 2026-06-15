@@ -84,6 +84,26 @@ function typeForChannel(channelId) {
   return 'unknown';
 }
 
+// ─── Item categorizer (based on weekly availability list categories) ─────────
+
+const ITEM_CATEGORIES = [
+  { category: 'Tomatoes', keywords: ['tomato', 'tomatoes', 'beefsteak', 'roma', 'plum', 'heirloom', 'cherry tom', 'grape tom', 'vine ripe', 'on vine', 'san marzano'] },
+  { category: 'Herbs & Spices', keywords: ['basil', 'bay leaf', 'bay leaves', 'chervil', 'chive', 'cilantro', 'dill', 'fennel', 'garlic scape', 'lemongrass', 'marjoram', 'mint', 'oregano', 'parsley', 'rosemary', 'sage', 'tarragon', 'thyme', 'dried mushroom', 'dried pepper', 'ancho', 'chipotle', 'guajillo', 'habanero', 'serrano', 'edible flower'] },
+  { category: 'Greens', keywords: ['arugula', 'bok choy', 'cabbage', 'chicory', 'collard', 'dandelion', 'escarole', 'endive', 'iceberg', 'kale', 'lettuce', 'romaine', 'spinach', 'spring mix', 'mesclun', 'swiss chard', 'chard', 'green leaf', 'red leaf', 'boston lettuce', 'baby gem'] },
+  { category: 'Vegetables', keywords: ['artichoke', 'asparagus', 'string bean', 'green bean', 'wax bean', 'haricot', 'beet', 'broccoli', 'broccolini', 'broccoli rabe', 'brussels sprout', 'carrot', 'celery', 'cauliflower', 'corn', 'cucumber', 'kirby', 'eggplant', 'fava', 'kohlrabi', 'leek', 'mushroom', 'onion', 'shallot', 'pea', 'pepper', 'peppers', 'radicchio', 'radish', 'squash', 'zucchini', 'turnip', 'parsnip', 'sunchoke', 'jerusalem artichoke', 'rhubarb', 'snap pea', 'snow pea'] },
+  { category: 'Potatoes', keywords: ['potato', 'potatoes', 'yam', 'sweet potato', 'fingerling', 'yukon', 'idaho', 'russet', 'red bliss'] },
+  { category: 'Fruit', keywords: ['apple', 'avocado', 'banana', 'berry', 'blueberry', 'blackberry', 'raspberry', 'strawberry', 'citrus', 'clementine', 'grapefruit', 'lemon', 'lime', 'mandarin', 'orange', 'tangerine', 'mango', 'melon', 'cantaloupe', 'honeydew', 'watermelon', 'peach', 'nectarine', 'plum', 'pear', 'pineapple', 'grape ', 'kiwi', 'fig', 'pomegranate', 'passion fruit', 'papaya', 'guava', 'coconut', 'cherry '] },
+  { category: 'Organic', keywords: ['organic'] },
+];
+
+function categorizeItem(itemName) {
+  const lower = itemName.toLowerCase();
+  for (const { category, keywords } of ITEM_CATEGORIES) {
+    if (keywords.some(kw => lower.includes(kw))) return category;
+  }
+  return 'Other';
+}
+
 // ─── Order parser (text) ──────────────────────────────────────────────────────
 
 function parseOrder(text) {
@@ -97,7 +117,8 @@ function parseOrder(text) {
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(itemPattern);
     if (match) {
-      items.push({ qty: parseInt(match[1], 10), item: match[2] });
+      const itemName = match[2];
+      items.push({ qty: parseInt(match[1], 10), item: itemName, category: categorizeItem(itemName) });
     } else if (i === 0 && items.length === 0) {
       customerName = lines[i];
     }
