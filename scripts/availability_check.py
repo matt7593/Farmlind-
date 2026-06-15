@@ -466,8 +466,13 @@ def main():
     messages = fetch_channel_history(channel_id, limit=200)
     print(f"Fetched {len(messages)} messages")
 
-    if not os.environ.get("FORCE_SEND") and not has_messages_today(messages):
-        print("No new messages posted today — skipping email.")
+    from datetime import timezone, timedelta
+    et = timezone(timedelta(hours=-4))
+    today_weekday = datetime.now(et).weekday()  # 1=Tuesday, 5=Saturday
+    is_scheduled_day = today_weekday in (1, 5)
+
+    if not os.environ.get("FORCE_SEND") and not is_scheduled_day and not has_messages_today(messages):
+        print("No new messages today and not a scheduled send day — skipping email.")
         return
 
     # item -> list of (vendor, price, unit)
