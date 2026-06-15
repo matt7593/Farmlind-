@@ -159,16 +159,18 @@ Return ONLY a JSON object:
   "vendor": "<vendor name or null>",
   "items": [
     {{
-      "item": "<produce item name including size/count/grade in Title Case>",
+      "item": "<produce item name ONLY — no sizes, counts, or grades — in Title Case>",
       "price": <price as a number only, no $ sign>,
-      "unit": "<unit if present e.g. lb, case, bunch, or blank>"
+      "unit": "<size/count/weight/grade — e.g. '72ct', '36ct', '2.5 inch', '5 pack', '50lb', '12/3lb bags', 'case', 'lb', 'bunch' — include ALL distinguishing size or count info here>"
     }}
   ]
 }}
 
 Rules:
-- ALWAYS include size, count, or grade in the item name when present (e.g. "Grapefruit 36ct", "Lime 230ct", "Fuji Apple 72ct", "Garlic 5 Pack", "Peach 2.5 Inch"). This is critical so different sizes of the same product appear as separate line items.
-- If the same item appears multiple times at different prices, they must have different sizes/grades in their names. Never list the same item name twice from the same vendor.
+- Item name must be the CLEAN product name only — NO counts, sizes, or grades in the name. Put all of that in the unit field instead.
+  - WRONG: "Fuji Apple 72ct", "Grapefruit 36ct", "Lime 230ct"
+  - RIGHT: item="Fuji Apple", unit="72ct" / item="Grapefruit", unit="36ct" / item="Lime", unit="230ct"
+- If the same item appears at multiple prices, put the distinguishing size/count/grade in the unit field so they can be told apart.
 - Price must be a number only — no $ symbol, no slashes.
 - If a price range is given (e.g. 1.00-1.50), use the lower number.
 - Do NOT include items with no price.
@@ -316,8 +318,8 @@ def build_spreadsheet(item_vendor_map):
     ws = wb.active
     ws.title = "Price Comparison"
 
-    headers = ["Item", "Price Range", "Cheapest Option", "Vendor", "Price", "Unit"]
-    col_widths = [28, 16, 22, 28, 12, 10]
+    headers = ["Item", "Price Range", "Cheapest Option", "Vendor", "Price", "Unit/Weight/Count"]
+    col_widths = [28, 16, 22, 28, 12, 18]
 
     for col, (h, w) in enumerate(zip(headers, col_widths), 1):
         cell = ws.cell(row=1, column=col, value=h)
@@ -533,7 +535,7 @@ def main():
                         key = normalize_item_name(item)
                         if key not in item_display_name:
                             item_display_name[key] = item
-                        entry = (vendor, float(price), unit)
+                        entry = (vendor, float(price), unit.strip())
                         if entry not in item_vendor_map[key]:
                             item_vendor_map[key].append(entry)
                     except (ValueError, TypeError):
