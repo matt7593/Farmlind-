@@ -389,6 +389,33 @@ def build_spreadsheet(item_vendor_map):
     return buf.getvalue()
 
 
+# ── Item name normalization ────────────────────────────────────────────────────
+
+import re
+import string
+
+SPECIALS_VENDORS = {"Sunday Specials", "Tuesday Specials", "Monday Specials", "Wednesday Specials"}
+
+def normalize_item_name(name):
+    """Normalize item names so minor variations map to the same key."""
+    # Remove punctuation except hyphens
+    name = re.sub(r"[,\.\/\\]", " ", name)
+    # Collapse whitespace
+    name = " ".join(name.split())
+    # Title case
+    name = name.title()
+    # Strip trailing 's' for common plurals (avocados→avocado, lemons→lemon)
+    # Only strip if word is longer than 4 chars to avoid breaking short words
+    words = name.split()
+    normalized = []
+    for w in words:
+        if len(w) > 4 and w.endswith("s") and not w.endswith("ss"):
+            normalized.append(w[:-1])
+        else:
+            normalized.append(w)
+    return " ".join(normalized)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -404,7 +431,12 @@ def main():
     print(f"Fetched {len(messages)} messages")
 
     # item -> list of (vendor, price, unit)
+    # Keys are normalized item names; values track (vendor, price, unit)
     item_vendor_map = defaultdict(list)
+    # canonical name lookup: normalized_key -> display name
+    item_display_name = {}
+    # track which vendors we've already processed (specials only use most recent)
+    seen_vendors = set()
 
     for msg in messages:
         ts = msg.get("ts", "0")
@@ -463,6 +495,11 @@ def main():
             if not vendor:
                 print(f"    Skipping — no vendor name found in content")
                 continue
+            # For specials vendors, only use the most recent message (Slack returns newest first)
+            if vendor in SPECIALS_VENDORS and vendor in seen_vendors:
+                print(f"    Skipping older {vendor} message")
+                continue
+            seen_vendors.add(vendor)
             items = result.get("items", [])
             print(f"    Vendor: {vendor} — {len(items)} items")
             for entry in items:
@@ -471,7 +508,10 @@ def main():
                 unit = entry.get("unit", "") or ""
                 if item and price is not None:
                     try:
-                        item_vendor_map[item].append((vendor, float(price), unit))
+                        key = normalize_item_name(item)
+                        if key not in item_display_name:
+                            item_display_name[key] = item
+                        item_vendor_map[key].append((vendor, float(price), unit))
                     except (ValueError, TypeError):
                         pass
         except Exception as e:
@@ -481,13 +521,19 @@ def main():
         print("No price data found in channel — nothing to send.")
         return
 
-    print(f"\nTotal unique items: {len(item_vendor_map)}")
+    # Rebuild map using display names for output
+    display_map = defaultdict(list)
+    for key, entries in item_vendor_map.items():
+        display_name = item_display_name.get(key, key)
+        display_map[display_name] = entries
+
+    print(f"\nTotal unique items: {len(display_map)}")
 
     today_str = datetime.now().strftime("%B %d, %Y")
     subject = f"Availability Price Comparison — {today_str}"
 
     print("Building spreadsheet...")
-    xlsx_bytes = build_spreadsheet(item_vendor_map)
+    xlsx_bytes = build_spreadsheet(display_map)
 
     body = (
         f"Hi Matt,\n\n"
