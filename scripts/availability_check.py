@@ -183,6 +183,8 @@ Rules:
 - Item name must be the CLEAN product name only — NO counts, sizes, or grades in the name. Put all of that in the unit field instead.
   - WRONG: "Fuji Apple 72ct", "Grapefruit 36ct", "Lime 230ct"
   - RIGHT: item="Fuji Apple", unit="72ct" / item="Grapefruit", unit="36ct" / item="Lime", unit="230ct"
+- ALWAYS write the variety/descriptor BEFORE the base fruit/vegetable name (e.g., "Fuji Apple" NOT "Apple Fuji", "Navel Orange" NOT "Orange Navel", "Hass Avocado" NOT "Avocado Hass", "Roma Tomato" NOT "Tomato Roma", "Bartlett Pear" NOT "Pear Bartlett").
+- Use SINGULAR form for all item names (e.g., "Strawberry" not "Strawberries", "Avocado" not "Avocados", "Lime" not "Limes").
 - If the same item appears at multiple prices, put the distinguishing size/count/grade in the unit field so they can be told apart.
 - Price must be a number only — no $ symbol, no slashes.
 - If a price range is given (e.g. 1.00-1.50), use the lower number.
@@ -414,10 +416,12 @@ import string
 SPECIALS_VENDORS = {"Sunday Specials", "Tuesday Specials", "Monday Specials", "Wednesday Specials"}
 
 ITEM_ALIASES = {
+    # Plurals → singular
     "strawberries": "Strawberry",
     "peaches": "Peach",
     "avocados": "Avocado",
     "mangoes": "Mango",
+    "mangos": "Mango",
     "pineapples": "Pineapple",
     "lemons": "Lemon",
     "limes": "Lime",
@@ -430,16 +434,176 @@ ITEM_ALIASES = {
     "plums": "Plum",
     "nectarines": "Nectarine",
     "apricots": "Apricot",
-    "apples, fuji": "Fuji Apple",
+    "tomatoes": "Tomato",
+    "peppers": "Pepper",
+    "onions": "Onion",
+    "potatoes": "Potato",
+    "cucumbers": "Cucumber",
+    "zucchinis": "Zucchini",
+    "watermelons": "Watermelon",
+    "cantaloupes": "Cantaloupe",
+    "honeydews": "Honeydew",
+    "pears": "Pear",
+    "apples": "Apple",
+    "bananas": "Banana",
+    "grapefruits": "Grapefruit",
+    "tangerines": "Tangerine",
+    "clementines": "Clementine",
+    "pomegranates": "Pomegranate",
+    "figs": "Fig",
+    "dates": "Date",
+    "kiwis": "Kiwi",
+    "papayas": "Papaya",
+    "guavas": "Guava",
+    "lychees": "Lychee",
+    "persimmons": "Persimmon",
+    "quinces": "Quince",
+    "kumquats": "Kumquat",
+    "artichokes": "Artichoke",
+    "asparagus tips": "Asparagus",
+    "broccolis": "Broccoli",
+    "cabbages": "Cabbage",
+    "carrots": "Carrot",
+    "cauliflowers": "Cauliflower",
+    "celeries": "Celery",
+    "corns": "Corn",
+    "eggplants": "Eggplant",
+    "garlic bulbs": "Garlic",
+    "lettuces": "Lettuce",
+    "mushrooms": "Mushroom",
+    "parsnips": "Parsnip",
+    "radishes": "Radish",
+    "spinaches": "Spinach",
+    "squashes": "Squash",
+    "turnips": "Turnip",
+    "beets": "Beet",
+    "leeks": "Leek",
+    "shallots": "Shallot",
+    "scallions": "Scallion",
+    "chives": "Chive",
+
+    # Fuji Apple variants
     "fuji": "Fuji Apple",
+    "fuji apple": "Fuji Apple",
+    "fuji apples": "Fuji Apple",
+    "apple fuji": "Fuji Apple",
     "apples fuji": "Fuji Apple",
-    "granny smith": "Granny Smith Apple",
-    "apples granny smith": "Granny Smith Apple",
+    "apples, fuji": "Fuji Apple",
+    "apple, fuji": "Fuji Apple",
+
+    # Granny Smith variants
     "granny": "Granny Smith Apple",
-    "pears, bartlett": "Bartlett Pear",
-    "onions, sweet globe": "Sweet Globe Onion",
-    "oranges, navel": "Navel Orange",
+    "granny smith": "Granny Smith Apple",
+    "granny smith apple": "Granny Smith Apple",
+    "granny smith apples": "Granny Smith Apple",
+    "apple granny smith": "Granny Smith Apple",
+    "apples granny smith": "Granny Smith Apple",
+    "apples, granny smith": "Granny Smith Apple",
+
+    # Gala Apple variants
+    "gala": "Gala Apple",
+    "gala apple": "Gala Apple",
+    "gala apples": "Gala Apple",
+    "apple gala": "Gala Apple",
+    "apples gala": "Gala Apple",
+    "apples, gala": "Gala Apple",
+
+    # Honeycrisp Apple variants
+    "honeycrisp": "Honeycrisp Apple",
+    "honeycrisp apple": "Honeycrisp Apple",
+    "honeycrisp apples": "Honeycrisp Apple",
+    "apple honeycrisp": "Honeycrisp Apple",
+    "apples honeycrisp": "Honeycrisp Apple",
+
+    # Hass Avocado variants
+    "hass": "Hass Avocado",
+    "hass avocado": "Hass Avocado",
     "hass avocados": "Hass Avocado",
+    "avocado hass": "Hass Avocado",
+    "avocados hass": "Hass Avocado",
+
+    # Navel Orange variants
+    "navel": "Navel Orange",
+    "navel orange": "Navel Orange",
+    "navel oranges": "Navel Orange",
+    "orange navel": "Navel Orange",
+    "oranges navel": "Navel Orange",
+    "oranges, navel": "Navel Orange",
+
+    # Bartlett Pear variants
+    "bartlett": "Bartlett Pear",
+    "bartlett pear": "Bartlett Pear",
+    "bartlett pears": "Bartlett Pear",
+    "pear bartlett": "Bartlett Pear",
+    "pears bartlett": "Bartlett Pear",
+    "pears, bartlett": "Bartlett Pear",
+
+    # Roma Tomato variants
+    "roma": "Roma Tomato",
+    "roma tomato": "Roma Tomato",
+    "roma tomatoes": "Roma Tomato",
+    "tomato roma": "Roma Tomato",
+    "tomatoes roma": "Roma Tomato",
+
+    # Bell Pepper variants
+    "bell pepper": "Bell Pepper",
+    "bell peppers": "Bell Pepper",
+    "pepper bell": "Bell Pepper",
+    "peppers bell": "Bell Pepper",
+    "green pepper": "Green Bell Pepper",
+    "green peppers": "Green Bell Pepper",
+    "red pepper": "Red Bell Pepper",
+    "red peppers": "Red Bell Pepper",
+    "yellow pepper": "Yellow Bell Pepper",
+    "yellow peppers": "Yellow Bell Pepper",
+
+    # Sweet Globe Onion
+    "sweet globe onion": "Sweet Globe Onion",
+    "onions, sweet globe": "Sweet Globe Onion",
+    "sweet onion": "Sweet Onion",
+    "sweet onions": "Sweet Onion",
+
+    # Yellow Onion variants
+    "yellow onion": "Yellow Onion",
+    "yellow onions": "Yellow Onion",
+    "onion yellow": "Yellow Onion",
+
+    # Red Onion variants
+    "red onion": "Red Onion",
+    "red onions": "Red Onion",
+
+    # Russet Potato variants
+    "russet": "Russet Potato",
+    "russet potato": "Russet Potato",
+    "russet potatoes": "Russet Potato",
+    "potato russet": "Russet Potato",
+
+    # Green/Red Grape variants
+    "green grape": "Green Grape",
+    "green grapes": "Green Grape",
+    "red grape": "Red Grape",
+    "red grapes": "Red Grape",
+    "black grape": "Black Grape",
+    "black grapes": "Black Grape",
+
+    # Misc common shorthand
+    "cukes": "Cucumber",
+    "zukes": "Zucchini",
+    "zucchini squash": "Zucchini",
+    "yellow squash": "Yellow Squash",
+    "butternut": "Butternut Squash",
+    "butternut squash": "Butternut Squash",
+    "iceberg": "Iceberg Lettuce",
+    "iceberg lettuce": "Iceberg Lettuce",
+    "romaine": "Romaine Lettuce",
+    "romaine lettuce": "Romaine Lettuce",
+    "baby spinach": "Baby Spinach",
+    "grape tomato": "Grape Tomato",
+    "grape tomatoes": "Grape Tomato",
+    "cherry tomato": "Cherry Tomato",
+    "cherry tomatoes": "Cherry Tomato",
+    "beefsteak tomato": "Beefsteak Tomato",
+    "beefsteak tomatoes": "Beefsteak Tomato",
 }
 
 def normalize_item_name(name):
