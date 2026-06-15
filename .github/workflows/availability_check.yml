@@ -5,6 +5,11 @@ on:
     # Every day at 8pm ET (00:00 UTC)
     - cron: '0 0 * * *'
   workflow_dispatch:
+    inputs:
+      force_send:
+        description: 'Force send email even if no new messages today'
+        required: false
+        default: 'false'
 
 jobs:
   check-availability:
@@ -26,4 +31,5 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN_1: ${{ secrets.GMAIL_REFRESH_TOKEN_1 }}
+          FORCE_SEND: ${{ github.event.inputs.force_send }}
         run: python scripts/availability_check.py
