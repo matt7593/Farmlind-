@@ -684,8 +684,8 @@
           card = document.createElement('div');
           card.className = 'card';
           card.dataset.customer = name;
-          grid.appendChild(card);
         }
+        grid.appendChild(card); // always append to maintain sorted order
 
         // Get unique senders for this customer
         const senders = [...new Set(visibleOrders.map(o => o.sender).filter(Boolean))];
