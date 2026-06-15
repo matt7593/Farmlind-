@@ -31,6 +31,11 @@ VENDORS = {
 
 NOTIFY_EMAILS = ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 
+# An order plus its follow-up parts are grouped into one "session" if sent within
+# this many hours of each other. Avoids splitting an evening's order across the
+# UTC midnight boundary (which calendar-date logic does).
+SESSION_HOURS = 8
+
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
@@ -212,40 +217,24 @@ def get_items_from_message(access_token, message_id, payload, vendor_keywords):
 ORDER_RECIPIENTS = "to:orders@goodnessgardens.com OR to:Office@dagelebrothersproduce.com OR to:anthony@mdottavioproduce.com"
 
 
-def fetch_order_emails(access_token, date, max_results=20):
-    """Fetch sent order emails on a given date."""
-    after = date.strftime("%Y/%m/%d")
-    from datetime import timedelta
-    next_day = (date + timedelta(days=1)).strftime("%Y/%m/%d")
-    result = gmail_get(access_token, "/users/me/messages", {
-        "q": f"in:sent subject:order ({ORDER_RECIPIENTS}) after:{after} before:{next_day}",
-        "maxResults": max_results
-    })
-    messages = []
-    for m in result.get("messages", []):
-        full = gmail_get(access_token, f"/users/me/messages/{m['id']}", {"format": "full"})
-        messages.append(full)
-    return messages
-
-
-def find_latest_order_timestamp(access_tokens, today):
-    """Return the internalDate (ms) of the most recent order email sent today, or None."""
-    after = today.strftime("%Y/%m/%d")
-    latest = None
+def fetch_all_recent_orders(access_tokens, days=16, max_results=60):
+    """Return [(ts_ms, access_token, full_message)] for every order email sent in the
+    last `days`, across all accounts, sorted oldest-first. Uses internalDate (epoch ms,
+    timezone-independent) so there are no calendar-boundary issues."""
+    out = []
     for email_addr, token in access_tokens:
         try:
             result = gmail_get(token, "/users/me/messages", {
-                "q": f"in:sent subject:order ({ORDER_RECIPIENTS}) after:{after}",
-                "maxResults": 10
+                "q": f"in:sent subject:order ({ORDER_RECIPIENTS}) newer_than:{days}d",
+                "maxResults": max_results
             })
             for m in result.get("messages", []):
-                full = gmail_get(token, f"/users/me/messages/{m['id']}", {"format": "metadata"})
-                ts = int(full.get("internalDate", 0))
-                if latest is None or ts > latest:
-                    latest = ts
-        except Exception:
-            pass
-    return latest
+                full = gmail_get(token, f"/users/me/messages/{m['id']}", {"format": "full"})
+                out.append((int(full.get("internalDate", 0)), token, full))
+        except Exception as e:
+            print(f"  Error fetching orders for {email_addr}: {e}")
+    out.sort(key=lambda x: x[0])
+    return out
 
 
 def reminder_already_sent_after(access_token, since_ms):
@@ -267,23 +256,22 @@ def reminder_already_sent_after(access_token, since_ms):
     return False
 
 
-def find_previous_order_items(access_token, today, vendor_keywords, max_search=30):
-    """Find the most recent past order email that contains items for this vendor."""
-    result = gmail_get(access_token, "/users/me/messages", {
-        "q": f"in:sent subject:order ({ORDER_RECIPIENTS})",
-        "maxResults": max_search
-    })
-    for m in result.get("messages", []):
-        full = gmail_get(access_token, f"/users/me/messages/{m['id']}", {"format": "full"})
-        ts = int(full.get("internalDate", 0)) / 1000
-        msg_date = datetime.fromtimestamp(ts).date()
-        if msg_date >= today.date():
+def collect_vendor_items(messages, keywords):
+    """Given a list of (ts, token, full_message), return all order items for this vendor,
+    deduplicating identical vendor sections that appear in more than one account."""
+    items = []
+    seen_sections = set()
+    for ts, token, msg in messages:
+        body = extract_text_from_part(msg.get("payload", {}))
+        section = extract_vendor_section(body, keywords).strip()
+        if section and section in seen_sections:
             continue
-        body = extract_text_from_part(full.get("payload", {}))
-        section = extract_vendor_section(body, vendor_keywords)
-        if section.strip():
-            return msg_date, [full]
-    return None, []
+        msg_items = get_items_from_message(token, msg["id"], msg.get("payload", {}), keywords)
+        if msg_items:
+            if section:
+                seen_sections.add(section)
+            items.extend(msg_items)
+    return items
 
 
 def normalize_items(items):
@@ -305,8 +293,7 @@ def normalize_items(items):
 
 
 
-def send_reminder(access_token, sender_email, missing_by_vendor, vendor_today, today, skipped_vendors=None):
-    subject = f"Order Check - {today.strftime('%A %b %d')}"
+def build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors=None):
     lines = [
         "Hi Matt,",
         "",
@@ -336,8 +323,18 @@ def send_reminder(access_token, sender_email, missing_by_vendor, vendor_today, t
         lines.append("")
         lines.append("=" * 40)
     lines += ["", "- Farmlind Order Bot"]
+    return "\n".join(lines)
 
-    body = "\n".join(lines)
+
+def preview_reminder(missing_by_vendor, vendor_today, skipped_vendors, today):
+    print(f"Subject: Order Check - {today.strftime('%A %b %d')}")
+    print(f"To: {', '.join(NOTIFY_EMAILS)}")
+    print(build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors))
+
+
+def send_reminder(access_token, sender_email, missing_by_vendor, vendor_today, today, skipped_vendors=None):
+    subject = f"Order Check - {today.strftime('%A %b %d')}"
+    body = build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors)
     raw = f"From: {sender_email}\r\nTo: {', '.join(NOTIFY_EMAILS)}\r\nSubject: {subject}\r\n\r\n{body}"
     encoded = base64.urlsafe_b64encode(raw.encode()).decode()
     gmail_post(access_token, "/users/me/messages/send", {"raw": encoded})
@@ -361,79 +358,64 @@ def main(override_date=None):
         print("No valid tokens, exiting.")
         return
 
-    # When running on a schedule, only proceed if a new order was sent at least 3 minutes ago
-    # and we haven't already sent a reminder for it
-    if not override_date and not os.environ.get("FORCE_SEND"):
-        from datetime import timedelta
-        latest_ts = find_latest_order_timestamp(access_tokens, today)
-        if not latest_ts:
-            print("No order sent today — nothing to do.")
+    session_ms = SESSION_HOURS * 3600 * 1000
+    now_ms = int(datetime.now().timestamp() * 1000)
+
+    all_orders = fetch_all_recent_orders(access_tokens)
+    if not all_orders:
+        print("No recent order emails found — nothing to do.")
+        return
+
+    # Anchor the current order session on the most recent order.
+    if override_date:
+        cutoff = int(datetime.combine(override_date.date(), datetime.max.time()).timestamp() * 1000)
+        candidates = [o for o in all_orders if o[0] <= cutoff]
+        if not candidates:
+            print("No order on or before that date — nothing to do.")
             return
-        order_age_minutes = (today.timestamp() * 1000 - latest_ts) / 60000
-        if order_age_minutes < 3:
-            print(f"Most recent order sent {order_age_minutes:.1f} min ago — waiting for 3 min mark.")
-            return
-        sender_email, sender_token = access_tokens[0]
-        if reminder_already_sent_after(sender_token, latest_ts):
-            print("Reminder already sent for this order — nothing to do.")
-            return
+        anchor_ts = candidates[-1][0]
+    else:
+        anchor_ts = all_orders[-1][0]
+        if not os.environ.get("FORCE_SEND"):
+            order_age_minutes = (now_ms - anchor_ts) / 60000
+            if order_age_minutes < 3:
+                print(f"Most recent order sent {order_age_minutes:.1f} min ago — waiting for 3 min mark.")
+                return
+            sender_token = access_tokens[0][1]
+            if reminder_already_sent_after(sender_token, anchor_ts):
+                print("Reminder already sent for this order — nothing to do.")
+                return
+
+    session_start = anchor_ts - session_ms
+    session_end = anchor_ts + session_ms
+    current_msgs = [o for o in all_orders if session_start <= o[0] <= session_end]
+    prior_msgs = [o for o in all_orders if o[0] < session_start]
+    print(f"Session anchored at {datetime.fromtimestamp(anchor_ts/1000)}; "
+          f"{len(current_msgs)} order email(s) in session, {len(prior_msgs)} prior.")
 
     vendor_today = {}
     vendor_previous = {}
 
     for vendor_name, keywords in VENDORS.items():
         print(f"\nChecking {vendor_name}...")
-        today_items = []
+        today_items = collect_vendor_items(current_msgs, keywords)
+
         prev_items = []
-
-        seen_today_ids = set()
-        for email_addr, token in access_tokens:
-            try:
-                todays_msgs = fetch_order_emails(token, today)
-                for msg in todays_msgs:
-                    if msg["id"] in seen_today_ids:
-                        continue
-                    seen_today_ids.add(msg["id"])
-                    items = get_items_from_message(token, msg["id"], msg.get("payload", {}), keywords)
-                    if items:
-                        print(f"  Found today's order from {email_addr} ({len(items)} items)")
-                        today_items.extend(items)
-            except Exception as e:
-                print(f"  Error fetching today for {email_addr}: {e}")
-
         if today_items:
-            # Find the most recent previous date across all accounts
-            best_prev_date = None
-            for email_addr, token in access_tokens:
-                try:
-                    pd, _ = find_previous_order_items(token, today, keywords)
-                    if pd and (best_prev_date is None or pd > best_prev_date):
-                        best_prev_date = pd
-                except Exception:
-                    pass
-
-            if best_prev_date:
-                print(f"  Previous order date: {best_prev_date}")
-                seen_prev_ids = set()
-                seen_prev_sections = set()
-                for email_addr, token in access_tokens:
-                    try:
-                        prev_msgs = fetch_order_emails(token, datetime.combine(best_prev_date, datetime.min.time()))
-                        for msg in prev_msgs:
-                            if msg["id"] in seen_prev_ids:
-                                continue
-                            seen_prev_ids.add(msg["id"])
-                            body = extract_text_from_part(msg.get("payload", {}))
-                            section = extract_vendor_section(body, keywords).strip()
-                            if section in seen_prev_sections:
-                                continue
-                            seen_prev_sections.add(section)
-                            items = get_items_from_message(token, msg["id"], msg.get("payload", {}), keywords)
-                            if items:
-                                print(f"  Found previous order from {email_addr} ({len(items)} items)")
-                                prev_items.extend(items)
-                    except Exception as e:
-                        print(f"  Error fetching previous for {email_addr}: {e}")
+            # Find the most recent prior order email containing this vendor, then group
+            # its multi-part follow-ups into a single previous session.
+            prev_anchor_ts = None
+            for ts, token, msg in reversed(prior_msgs):
+                body = extract_text_from_part(msg.get("payload", {}))
+                if extract_vendor_section(body, keywords).strip():
+                    prev_anchor_ts = ts
+                    break
+            if prev_anchor_ts is not None:
+                p_start = prev_anchor_ts - session_ms
+                p_end = prev_anchor_ts + session_ms
+                prev_session = [o for o in prior_msgs if p_start <= o[0] <= p_end]
+                prev_items = collect_vendor_items(prev_session, keywords)
+                print(f"  Previous order: {datetime.fromtimestamp(prev_anchor_ts/1000).date()}")
 
         vendor_today[vendor_name] = today_items
         vendor_previous[vendor_name] = prev_items
@@ -441,7 +423,7 @@ def main(override_date=None):
 
     ordered_today = any(items for items in vendor_today.values())
     if not ordered_today:
-        print("\nNo orders sent today — nothing to compare.")
+        print("\nNo orders in this session — nothing to compare.")
         return
 
     missing_by_vendor = {}
@@ -469,19 +451,16 @@ def main(override_date=None):
         except Exception as e:
             print(f"  Comparison error for {vendor_name}: {e}")
 
-    # Check for vendors Matt has ordered from before but skipped entirely today
+    # Check for vendors Matt has ordered from before but skipped entirely this session
     skipped_vendors = []
     for vendor_name, keywords in VENDORS.items():
         if not vendor_today[vendor_name]:
-            # See if he's ever ordered from this vendor before
-            for email_addr, token in access_tokens:
-                try:
-                    pd, _ = find_previous_order_items(token, today, keywords)
-                    if pd:
-                        skipped_vendors.append(vendor_name)
-                        break
-                except Exception:
-                    pass
+            ordered_before = any(
+                extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
+                for ts, token, msg in prior_msgs
+            )
+            if ordered_before:
+                skipped_vendors.append(vendor_name)
 
     if not missing_by_vendor and not skipped_vendors:
         print("\nAll previous items accounted for. No reminder needed.")
@@ -490,6 +469,12 @@ def main(override_date=None):
     sender_email, sender_token = access_tokens[0]
     print(f"\nMissing items: {missing_by_vendor}")
     print(f"Skipped vendors: {skipped_vendors}")
+
+    if os.environ.get("DRY_RUN"):
+        print("\n--- DRY RUN: email NOT sent. Preview below ---")
+        preview_reminder(missing_by_vendor, vendor_today, skipped_vendors, today)
+        return
+
     send_reminder(sender_token, sender_email, missing_by_vendor, vendor_today, today, skipped_vendors)
 
 
