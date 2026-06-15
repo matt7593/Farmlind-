@@ -495,8 +495,9 @@ def main():
             if not vendor:
                 print(f"    Skipping — no vendor name found in content")
                 continue
-            # For specials vendors, only use the most recent message (Slack returns newest first)
-            if vendor in SPECIALS_VENDORS and vendor in seen_vendors:
+            # Only use the most recent message per vendor (Slack returns newest first)
+            # This means if a vendor hasn't posted recently, their last price is still used
+            if vendor in seen_vendors:
                 print(f"    Skipping older {vendor} message")
                 continue
             seen_vendors.add(vendor)

@@ -1,6 +1,9 @@
 name: Availability Price Check
 
 on:
+  schedule:
+    # Every Tuesday and Saturday at 8am ET (13:00 UTC)
+    - cron: '0 13 * * 2,6'
   workflow_dispatch:
 
 jobs:
