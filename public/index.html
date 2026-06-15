@@ -634,7 +634,12 @@
   // ── Render ─────────────────────────────────────────────────────────────────
   function render(orders) {
     allOrders = orders;
-    const customers = Object.keys(orders).sort((a, b) => a.localeCompare(b));
+    // Sort by most recent order first
+    const customers = Object.keys(orders).sort((a, b) => {
+      const latestA = Math.max(...orders[a].map(o => new Date(o.timestamp)));
+      const latestB = Math.max(...orders[b].map(o => new Date(o.timestamp)));
+      return latestB - latestA;
+    });
 
     const tabs = ['all', 'restaurant', 'grocery', 'unknown'];
 
