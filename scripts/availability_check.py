@@ -129,35 +129,44 @@ def download_slack_file(url):
 def build_extract_prompt(product_names):
     reference_section = ""
     if product_names:
-        # Include a sample of names to keep the prompt from being enormous
         sample = product_names[:300]
         reference_section = (
             "\n\nKNOWN PRODUCT NAMES (use these to resolve abbreviations and shorthand):\n"
             + "\n".join(f"- {n}" for n in sample)
-            + "\n\nWhen you see an abbreviation or short name in the vendor list, match it to the "
-            "closest known product name above and use that as the item name in your output."
+            + "\n\nWhen you see an abbreviation or short name, match it to the closest known product name above."
         )
 
-    return f"""You are parsing a produce availability/price list from a vendor.
+    return f"""You are parsing a produce availability/price list. Extract the vendor name and all priced items.
 
-Extract:
-1. The vendor/company name (look for it in the document header, footer, or letterhead). If you cannot find a company name, return "Unknown Vendor".
-2. Every item that has a price.
+VENDOR NAME RULES — identify the vendor using these exact mappings:
+- "TMK", "Tmk" → "TMK"
+- "Aurpack", "Aurback", "Auerbach", "Aurebach", "Auerpak", "Aureback" → "Aurpack"
+- "Nathel", "Nathel list", "Nathel prices" → "Nathel"
+- "Top line", "Top Line" → "Top Line"
+- "A and j", "A and J", "A & J", "A&J" → "A & J Produce Corp"
+- "Dagele", "DAGELE" → "Dagele Brothers"
+- "Triple J" → "Triple J"
+- "Andy boy", "Andy Boy" → "Andy Boy"
+- "Stews", "Stew", "Stew Leonard" → "Stew Leonards"
+- If the content says "Sunday Specials" or "Sunday prices" → vendor is "Sunday Specials"
+- If the content says "Tuesday Specials" → vendor is "Tuesday Specials"
+- If the content says "Monday Specials" → vendor is "Monday Specials"
+- If the content says "Wednesday Specials" → vendor is "Wednesday Specials"
+- If no vendor can be identified → return null for vendor
 
-Return ONLY a JSON object in this exact format:
+Return ONLY a JSON object:
 {{
-  "vendor": "<company name>",
+  "vendor": "<vendor name or null>",
   "items": [
     {{
-      "item": "<produce item name, normalized to Title Case>",
-      "price": <price as a number, e.g. 1.25>,
-      "unit": "<unit if present, e.g. 'lb', 'each', 'case', 'bunch', or blank>"
+      "item": "<produce item name in Title Case>",
+      "price": <price as a number only, no $ sign>,
+      "unit": "<unit if present e.g. lb, case, bunch, or blank>"
     }}
   ]
 }}
 
 Rules:
-- Normalize item names to Title Case, remove extra spaces.
 - Price must be a number only — no $ symbol, no slashes.
 - If a price range is given (e.g. 1.00-1.50), use the lower number.
 - Do NOT include items with no price.
