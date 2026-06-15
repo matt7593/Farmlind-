@@ -363,6 +363,28 @@ function findBaseKey(orders, baseName) {
   return partial || null;
 }
 
+function backfillCategories() {
+  const orders = loadOrders();
+  let changed = false;
+
+  for (const orderList of Object.values(orders)) {
+    for (const order of orderList) {
+      if (!order.items) continue;
+      for (const item of order.items) {
+        if (!item.category) {
+          item.category = categorizeItem(item.item);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    saveOrders(orders);
+    console.log('Backfilled item categories for existing orders.');
+  }
+}
+
 function migrateAddOrders() {
   const orders = loadOrders();
   let changed = false;
@@ -528,5 +550,6 @@ web.listen(PORT, () => console.log(`Dashboard → http://localhost:${PORT}`));
     console.error('Could not get team domain:', e.message);
   }
   migrateAddOrders();
+  backfillCategories();
   await backfillToday(slackApp.client);
 })();
