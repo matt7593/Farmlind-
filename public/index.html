@@ -493,8 +493,8 @@
   // ── Main tab switching ─────────────────────────────────────────────────────
   function switchMainTab(tab) {
     activeMainTab = tab;
-    document.getElementById('tab-main-orders').classList.toggle('active', tab === 'orders');
-    document.getElementById('tab-main-daily').classList.toggle('active', tab === 'daily');
+    document.getElementById('tab-main-orders').classList[tab === 'orders' ? 'add' : 'remove']('active');
+    document.getElementById('tab-main-daily').classList[tab === 'daily'  ? 'add' : 'remove']('active');
     document.getElementById('section-orders').style.display = tab === 'orders' ? '' : 'none';
     document.getElementById('section-daily').style.display  = tab === 'daily'  ? '' : 'none';
     if (tab === 'daily') renderDailyTotals(allOrders);
@@ -696,7 +696,8 @@
       for (const name of filtered) {
         const orderList = orders[name];
         // For non-all tabs, only show orders matching that type
-        const visibleOrders = t === 'all' ? orderList : orderList.filter(o => (o.type || 'unknown') === t);
+        const visibleOrders = (t === 'all' ? orderList : orderList.filter(o => (o.type || 'unknown') === t))
+          .slice().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
         let card = grid.querySelector(`.card[data-customer="${CSS.escape(name)}"]`);
         if (!card) {
