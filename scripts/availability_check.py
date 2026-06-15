@@ -188,9 +188,9 @@ def extract_prices_from_content(content_blocks, sender_name, product_names):
         else:
             return None
 
-    # If Claude couldn't find a vendor name, fall back to the Slack sender
-    if not data.get("vendor") or data["vendor"] == "Unknown Vendor":
-        data["vendor"] = sender_name
+    # Skip messages where Claude couldn't identify a real vendor name
+    if not data.get("vendor") or data["vendor"] in ("Unknown Vendor", ""):
+        data["vendor"] = None
 
     return data
 
@@ -450,7 +450,10 @@ def main():
             result = extract_prices_from_content(content_blocks, sender_name, product_names)
             if not result:
                 continue
-            vendor = result.get("vendor", sender_name)
+            vendor = result.get("vendor")
+            if not vendor:
+                print(f"    Skipping — no vendor name found in content")
+                continue
             items = result.get("items", [])
             print(f"    Vendor: {vendor} — {len(items)} items")
             for entry in items:
@@ -474,9 +477,15 @@ def main():
     today_str = datetime.now().strftime("%B %d, %Y")
     subject = f"Availability Price Comparison — {today_str}"
 
-    print("Building email and spreadsheet...")
-    body = build_email_body(item_vendor_map, today_str)
+    print("Building spreadsheet...")
     xlsx_bytes = build_spreadsheet(item_vendor_map)
+
+    body = (
+        f"Hi Matt,\n\n"
+        f"Attached is today's availability price comparison across all vendors.\n\n"
+        f"GREEN = cheapest option   |   RED = most expensive   |   YELLOW = middle\n\n"
+        f"— Farmlind Availability Bot"
+    )
 
     print("Sending email...")
     token = get_access_token()
