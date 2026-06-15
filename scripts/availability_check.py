@@ -17,7 +17,9 @@ GMAIL_CLIENT_ID = os.environ["GMAIL_CLIENT_ID"]
 GMAIL_CLIENT_SECRET = os.environ["GMAIL_CLIENT_SECRET"]
 GMAIL_REFRESH_TOKEN = os.environ["GMAIL_REFRESH_TOKEN_1"]
 
-NOTIFY_EMAILS = ["matt@farmlindproduce.com", "farmlindproduce@gmail.com", "babbe331@gmail.com", "howard@farmlindproduce.com"]
+ALL_EMAILS  = ["matt@farmlindproduce.com", "farmlindproduce@gmail.com", "babbe331@gmail.com", "howard@farmlindproduce.com"]
+TEST_EMAILS = ["babbe331@gmail.com"]
+NOTIFY_EMAILS = TEST_EMAILS if os.environ.get("TEST_MODE") == "true" else ALL_EMAILS
 CHANNEL_NAME = "availability-list-changes"
 REFERENCE_FILE = os.path.join(os.path.dirname(__file__), "product_reference.xlsx")
 

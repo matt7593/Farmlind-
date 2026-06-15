@@ -10,6 +10,10 @@ on:
         description: 'Force send email even if no new messages today'
         required: false
         default: 'false'
+      test_mode:
+        description: 'Test mode — send only to babbe331@gmail.com'
+        required: false
+        default: 'false'
 
 jobs:
   check-availability:
@@ -32,4 +36,5 @@ jobs:
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN_1: ${{ secrets.GMAIL_REFRESH_TOKEN_1 }}
           FORCE_SEND: ${{ github.event.inputs.force_send }}
+          TEST_MODE: ${{ github.event.inputs.test_mode }}
         run: python scripts/availability_check.py
