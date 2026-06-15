@@ -395,7 +395,9 @@ def main():
     print(f"Fetched {len(messages)} messages")
 
     # item -> list of (vendor, price, unit)
+    # Only one price per vendor per item — first message wins (Slack returns newest first)
     item_vendor_map = defaultdict(list)
+    seen_item_vendor = set()  # (item, vendor) pairs already recorded
 
     for msg in messages:
         ts = msg.get("ts", "0")
@@ -462,7 +464,10 @@ def main():
                 unit = entry.get("unit", "") or ""
                 if item and price is not None:
                     try:
-                        item_vendor_map[item].append((vendor, float(price), unit))
+                        key = (item.lower(), vendor.lower())
+                        if key not in seen_item_vendor:
+                            seen_item_vendor.add(key)
+                            item_vendor_map[item].append((vendor, float(price), unit))
                     except (ValueError, TypeError):
                         pass
         except Exception as e:
