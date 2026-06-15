@@ -60,27 +60,32 @@
       cursor: pointer;
       font-size: .9rem;
       font-weight: 600;
-      color: rgba(255,255,255,.65);
-      background: rgba(255,255,255,.1);
+      color: rgba(255,255,255,.5);
+      background: rgba(0,0,0,.25);
       border: none;
       transition: background .15s, color .15s;
     }
+    .tab:hover:not(.active) {
+      background: rgba(0,0,0,.15);
+      color: rgba(255,255,255,.8);
+    }
 
     .tab.active {
-      background: #f0f4f0;
+      background: #ffffff;
       color: #2d5a27;
+      font-weight: 700;
     }
 
     .tab-count {
       display: inline-block;
-      background: rgba(255,255,255,.2);
+      background: rgba(255,255,255,.25);
       border-radius: 10px;
       padding: 1px 7px;
       font-size: .72rem;
       margin-left: 6px;
     }
 
-    .tab.active .tab-count { background: #2d5a2722; color: #2d5a27; }
+    .tab.active .tab-count { background: #2d5a2718; color: #2d5a27; }
 
     /* ── Main ── */
     main { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
