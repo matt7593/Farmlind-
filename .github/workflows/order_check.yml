@@ -2,9 +2,8 @@ name: Matt Order Check
 
 on:
   schedule:
-    # Every 5 min, 5pm ET – 1am ET every day (21:00–04:59 UTC).
-    # Matt typically sends around 7pm ET; this comfortably brackets that.
-    - cron: '*/5 21,22,23,0,1,2,3,4 * * *'
+    # Every 5 min, 24 hours a day — catches Matt's order whenever he sends it.
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
