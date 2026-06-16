@@ -164,10 +164,13 @@ VENDOR NAME RULES — identify the vendor using these exact mappings:
 - "Andy boy", "Andy Boy" → "Andy Boy"
 - "Stews", "Stew", "Stew Leonard" → "Stew Leonards"
 - "Dottavio", "M Dottavio", "M. Dottavio", "Dottavio Produce", "mdottavioproduce" → "Dottavio"
-- If the content says "Sunday Specials" or "Sunday prices" → vendor is "Sunday Specials"
-- If the content says "Tuesday Specials" → vendor is "Tuesday Specials"
-- If the content says "Monday Specials" → vendor is "Monday Specials"
-- If the content says "Wednesday Specials" → vendor is "Wednesday Specials"
+- SPECIALS lists (e.g. "Sunday Specials", "Monday Specials", "Tuesday Specials",
+  "Wednesday Specials", or "<day> prices/specials"): set the vendor to "<Day> Specials".
+  IMPORTANT: if the content also identifies WHICH supplier/company is offering the
+  specials (a vendor/company name appears anywhere in the message or list), append it
+  so the label reads "<Day> Specials - <Vendor>" — e.g. "Sunday Specials - Aurpack",
+  "Tuesday Specials - TMK". Normalize that supplier name using the mappings above. If
+  no specific supplier is named, just use "<Day> Specials".
 - If no vendor can be identified → return null for vendor
 
 Return ONLY a JSON object:
@@ -466,7 +469,7 @@ def build_spreadsheet(item_vendor_map):
             all_vendors.add(vendor)
     # Sort alphabetically, but push the "Specials" vendors to the end
     def vendor_sort_key(v):
-        return (1 if v in SPECIALS_VENDORS else 0, v.lower())
+        return (1 if "specials" in v.lower() else 0, v.lower())
     vendors = sorted(all_vendors, key=vendor_sort_key)
 
     # ── Header row ──
@@ -960,7 +963,10 @@ def main():
         user_id = msg.get("user", "")
         sender_name = get_user_display_name(user_id) if user_id else "Unknown"
 
+        # Non-PDF content (text + images + spreadsheet text) goes in one bundle;
+        # PDFs are extracted page-by-page so big multi-page lists aren't truncated.
         content_blocks = []
+        pdf_files = []
 
         text = msg.get("text", "").strip()
         if text:
@@ -976,11 +982,7 @@ def main():
             try:
                 file_bytes = download_slack_file(url)
                 if "pdf" in mime or filename.lower().endswith(".pdf"):
-                    content_blocks.append({
-                        "type": "document",
-                        "source": {"type": "base64", "media_type": "application/pdf",
-                                   "data": base64.b64encode(file_bytes).decode()}
-                    })
+                    pdf_files.append((filename, file_bytes))
                 elif mime.startswith("image/"):
                     content_blocks.append({
                         "type": "image",
@@ -999,16 +1001,28 @@ def main():
             except Exception as e:
                 print(f"  File error: {e}")
 
-        if not content_blocks:
+        # A message with only a bare "uploaded a file" stub and no real content is skipped
+        has_real_text = any(b.get("type") == "text" and b.get("text", "").strip()
+                            for b in content_blocks)
+        if not pdf_files and not has_real_text and not any(
+                b.get("type") == "image" for b in content_blocks):
             continue
 
         msg_date = datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
         print(f"  Parsing message from {sender_name} ({msg_date})...")
         try:
-            result = extract_prices_from_content(content_blocks, sender_name, product_names)
-            if result:
-                merge_result_into_map(result, item_vendor_map, item_display_name,
-                                      seen_vendors, vendor_item_keys)
+            # PDFs first (the actual price lists), then the text/image bundle.
+            for fname, fbytes in pdf_files:
+                print(f"  PDF: {fname}")
+                pres = extract_prices_from_pdf_chunked(fbytes, product_names)
+                if pres:
+                    merge_result_into_map(pres, item_vendor_map, item_display_name,
+                                          seen_vendors, vendor_item_keys)
+            if has_real_text or any(b.get("type") == "image" for b in content_blocks):
+                result = extract_prices_from_content(content_blocks, sender_name, product_names)
+                if result:
+                    merge_result_into_map(result, item_vendor_map, item_display_name,
+                                          seen_vendors, vendor_item_keys)
         except Exception as e:
             print(f"  Parse error: {e}")
 
