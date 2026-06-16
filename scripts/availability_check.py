@@ -198,7 +198,7 @@ def extract_prices_from_content(content_blocks, sender_name, product_names):
     prompt = build_extract_prompt(product_names)
     result = claude.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=4096,
+        max_tokens=8192,
         messages=[{
             "role": "user",
             "content": content_blocks + [{"type": "text", "text": prompt}]
@@ -223,6 +223,52 @@ def extract_prices_from_content(content_blocks, sender_name, product_names):
         data["vendor"] = None
 
     return data
+
+
+def pdf_page_texts(file_bytes):
+    """Return a list of text strings, one per PDF page."""
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(file_bytes))
+    return [(page.extract_text() or "") for page in reader.pages]
+
+
+def extract_prices_from_pdf_chunked(file_bytes, product_names, pages_per_chunk=2):
+    """Extract prices from a large multi-page PDF by processing it in page-chunks,
+    so a long list (hundreds of items) is never truncated by the model's output limit.
+    Returns a single merged {"vendor": ..., "items": [...]} dict."""
+    pages = pdf_page_texts(file_bytes)
+    if not pages or not any(p.strip() for p in pages):
+        # No extractable text (scanned PDF) — fall back to sending the whole document
+        block = {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf",
+                       "data": base64.b64encode(file_bytes).decode()}
+        }
+        return extract_prices_from_content([block], "PDF", product_names)
+
+    vendor = None
+    all_items = []
+    total_chunks = (len(pages) + pages_per_chunk - 1) // pages_per_chunk
+    for i in range(0, len(pages), pages_per_chunk):
+        chunk_text = "\n".join(pages[i:i + pages_per_chunk]).strip()
+        if not chunk_text:
+            continue
+        chunk_num = i // pages_per_chunk + 1
+        print(f"    Chunk {chunk_num}/{total_chunks} (pages {i + 1}-{min(i + pages_per_chunk, len(pages))})...")
+        try:
+            result = extract_prices_from_content(
+                [{"type": "text", "text": chunk_text}], "PDF", product_names
+            )
+        except Exception as e:
+            print(f"      Chunk error: {e}")
+            continue
+        if not result:
+            continue
+        if not vendor and result.get("vendor"):
+            vendor = result["vendor"]
+        all_items.extend(result.get("items", []))
+
+    return {"vendor": vendor, "items": all_items}
 
 
 # ── Gmail helpers ──────────────────────────────────────────────────────────────
@@ -680,6 +726,11 @@ def merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendo
             return None
         seen_vendors.add(vendor)
 
+    # Snapshot the keys this vendor already had BEFORE this merge. In fill-only
+    # (baseline) mode we skip only those — i.e. items a fresher Slack post already
+    # supplied — while still allowing this list's own size variants of the same item.
+    prior_keys = set(vendor_item_keys[vendor])
+
     items = result.get("items", [])
     added = 0
     skipped = 0
@@ -695,7 +746,7 @@ def merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendo
             continue
         # In fill-only mode, don't overwrite an item this vendor already supplied
         # from a fresher (Slack) source.
-        if fill_only and key in vendor_item_keys[vendor]:
+        if fill_only and key in prior_keys:
             skipped += 1
             continue
         try:
@@ -732,21 +783,21 @@ def process_static_lists(item_vendor_map, item_display_name, seen_vendors,
         try:
             with open(path, "rb") as fh:
                 file_bytes = fh.read()
-            content_blocks = []
+
+            print(f"  Parsing static price list: {filename}...")
             if lower.endswith(".pdf"):
-                content_blocks.append({
-                    "type": "document",
-                    "source": {"type": "base64", "media_type": "application/pdf",
-                               "data": base64.b64encode(file_bytes).decode()}
-                })
+                # Multi-page price lists are processed page-by-page so nothing is
+                # truncated by the model output limit.
+                result = extract_prices_from_pdf_chunked(file_bytes, product_names)
             elif lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
                 ext = lower.rsplit(".", 1)[-1]
                 media = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
-                content_blocks.append({
+                block = {
                     "type": "image",
                     "source": {"type": "base64", "media_type": media,
                                "data": base64.b64encode(file_bytes).decode()}
-                })
+                }
+                result = extract_prices_from_content([block], "Static List", product_names)
             elif lower.endswith((".xlsx", ".xls")):
                 import openpyxl as _oxl
                 wb = _oxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
@@ -755,12 +806,12 @@ def process_static_lists(item_vendor_map, item_display_name, seen_vendors,
                     for sheet in wb.worksheets
                     for row in sheet.iter_rows(values_only=True)
                 )
-                content_blocks.append({"type": "text", "text": text_content})
+                result = extract_prices_from_content(
+                    [{"type": "text", "text": text_content}], "Static List", product_names
+                )
             else:
                 continue
 
-            print(f"  Parsing static price list: {filename}...")
-            result = extract_prices_from_content(content_blocks, "Static List", product_names)
             if result:
                 merge_result_into_map(result, item_vendor_map, item_display_name,
                                       seen_vendors, vendor_item_keys, fill_only=True)

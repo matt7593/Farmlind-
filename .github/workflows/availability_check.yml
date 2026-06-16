@@ -26,7 +26,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install anthropic openpyxl
+        run: pip install anthropic openpyxl pypdf
 
       - name: Run availability check
         env:
