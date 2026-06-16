@@ -654,6 +654,89 @@ def normalize_item_name(name):
     return name.title()
 
 
+STATIC_LISTS_DIR = os.path.join(os.path.dirname(__file__), "static_price_lists")
+
+
+def merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendors):
+    """Merge one extraction result into the running item->vendor map.
+    Returns the vendor name if merged, or None if skipped."""
+    vendor = result.get("vendor")
+    if not vendor:
+        print("    Skipping — no vendor name found in content")
+        return None
+    # Only use the most recent source per vendor (Slack is processed first, newest-first)
+    if vendor in seen_vendors:
+        print(f"    Skipping older {vendor} source")
+        return None
+    seen_vendors.add(vendor)
+    items = result.get("items", [])
+    print(f"    Vendor: {vendor} — {len(items)} items")
+    for entry in items:
+        item = entry.get("item", "").strip()
+        price = entry.get("price")
+        unit = entry.get("unit", "") or ""
+        if item and price is not None:
+            try:
+                key = normalize_item_name(item)
+                if key not in item_display_name:
+                    item_display_name[key] = item
+                row = (vendor, float(price), unit.strip())
+                if row not in item_vendor_map[key]:
+                    item_vendor_map[key].append(row)
+            except (ValueError, TypeError):
+                pass
+    return vendor
+
+
+def process_static_lists(item_vendor_map, item_display_name, seen_vendors, product_names):
+    """Parse any baseline price lists bundled in static_price_lists/ and merge them in.
+    These are vendors whose lists are NOT posted to Slack. A newer Slack post for the
+    same vendor (processed earlier) takes priority via seen_vendors."""
+    if not os.path.isdir(STATIC_LISTS_DIR):
+        return
+    for filename in sorted(os.listdir(STATIC_LISTS_DIR)):
+        path = os.path.join(STATIC_LISTS_DIR, filename)
+        if not os.path.isfile(path):
+            continue
+        lower = filename.lower()
+        try:
+            with open(path, "rb") as fh:
+                file_bytes = fh.read()
+            content_blocks = []
+            if lower.endswith(".pdf"):
+                content_blocks.append({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf",
+                               "data": base64.b64encode(file_bytes).decode()}
+                })
+            elif lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                ext = lower.rsplit(".", 1)[-1]
+                media = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+                content_blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media,
+                               "data": base64.b64encode(file_bytes).decode()}
+                })
+            elif lower.endswith((".xlsx", ".xls")):
+                import openpyxl as _oxl
+                wb = _oxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
+                text_content = "\n".join(
+                    " ".join(str(c) for c in row if c is not None)
+                    for sheet in wb.worksheets
+                    for row in sheet.iter_rows(values_only=True)
+                )
+                content_blocks.append({"type": "text", "text": text_content})
+            else:
+                continue
+
+            print(f"  Parsing static price list: {filename}...")
+            result = extract_prices_from_content(content_blocks, "Static List", product_names)
+            if result:
+                merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendors)
+        except Exception as e:
+            print(f"  Static list error ({filename}): {e}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -736,39 +819,18 @@ def main():
         print(f"  Parsing message from {sender_name} ({msg_date})...")
         try:
             result = extract_prices_from_content(content_blocks, sender_name, product_names)
-            if not result:
-                continue
-            vendor = result.get("vendor")
-            if not vendor:
-                print(f"    Skipping — no vendor name found in content")
-                continue
-            # Only use the most recent message per vendor (Slack returns newest first)
-            # This means if a vendor hasn't posted recently, their last price is still used
-            if vendor in seen_vendors:
-                print(f"    Skipping older {vendor} message")
-                continue
-            seen_vendors.add(vendor)
-            items = result.get("items", [])
-            print(f"    Vendor: {vendor} — {len(items)} items")
-            for entry in items:
-                item = entry.get("item", "").strip()
-                price = entry.get("price")
-                unit = entry.get("unit", "") or ""
-                if item and price is not None:
-                    try:
-                        key = normalize_item_name(item)
-                        if key not in item_display_name:
-                            item_display_name[key] = item
-                        entry = (vendor, float(price), unit.strip())
-                        if entry not in item_vendor_map[key]:
-                            item_vendor_map[key].append(entry)
-                    except (ValueError, TypeError):
-                        pass
+            if result:
+                merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendors)
         except Exception as e:
             print(f"  Parse error: {e}")
 
+    # Merge in baseline price lists not posted to Slack (e.g. Nathel).
+    # Slack was processed first, so a newer Slack post for the same vendor wins.
+    print("\nProcessing static (non-Slack) price lists...")
+    process_static_lists(item_vendor_map, item_display_name, seen_vendors, product_names)
+
     if not item_vendor_map:
-        print("No price data found in channel — nothing to send.")
+        print("No price data found — nothing to send.")
         return
 
     # Rebuild map using display names for output
