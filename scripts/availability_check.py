@@ -151,7 +151,7 @@ def build_extract_prompt(product_names):
             + "\n\nWhen you see an abbreviation or short name, match it to the closest known product name above."
         )
 
-    return f"""You are parsing a produce availability/price list. Extract the vendor name and all priced items.
+    return f"""You are parsing a produce availability/price list. Extract the vendor name(s) and all priced items.
 
 VENDOR NAME RULES — identify the vendor using these exact mappings:
 - "TMK", "Tmk" → "TMK"
@@ -164,14 +164,28 @@ VENDOR NAME RULES — identify the vendor using these exact mappings:
 - "Andy boy", "Andy Boy" → "Andy Boy"
 - "Stews", "Stew", "Stew Leonard" → "Stew Leonards"
 - "Dottavio", "M Dottavio", "M. Dottavio", "Dottavio Produce", "mdottavioproduce" → "Dottavio"
-- SPECIALS lists (e.g. "Sunday Specials", "Monday Specials", "Tuesday Specials",
-  "Wednesday Specials", or "<day> prices/specials"): set the vendor to "<Day> Specials".
-  IMPORTANT: if the content also identifies WHICH supplier/company is offering the
-  specials (a vendor/company name appears anywhere in the message or list), append it
-  so the label reads "<Day> Specials - <Vendor>" — e.g. "Sunday Specials - Aurpack",
-  "Tuesday Specials - TMK". Normalize that supplier name using the mappings above. If
-  no specific supplier is named, just use "<Day> Specials".
+- "Armotta", "Aramotta", "Armotta Produce" → "Armotta"
+- "Donaldson", "Donaldson Farms" → "Donaldson"
+- "Cassaday", "Cassady", "Cassaday Farms" → "Cassaday"
+- "Tranquility", "Tranquillity" → "Tranquility"
+- "Landisville", "Landisville Produce" → "Landisville"
+- A Nathel order/screenshot labeled with "Josh" (Josh's order/list) → "Josh Nathel"
+- A Nathel order/screenshot labeled with "Paul" (Paul's order/list) → "Paul Nathel"
+- SPECIALS lists (e.g. "Sunday Specials", "Monday Specials", ... any day Sunday-Saturday,
+  or "<day> prices/specials"): set the vendor to "<Day> Specials - <Supplier>". You MUST
+  attach the supplier/company offering the specials (the vendor name in the message),
+  normalized using the mappings above — e.g. "Tuesday Specials - TMK",
+  "Saturday Specials - Aurpack".
+  SUNDAY specials are ALWAYS offered by either TMK or Nathel — determine which one from
+  the content and label it "Sunday Specials - TMK" or "Sunday Specials - Nathel".
+  Only omit the supplier (use plain "<Day> Specials") if truly no supplier can be determined.
 - If no vendor can be identified → return null for vendor
+
+MULTIPLE VENDORS IN ONE MESSAGE: If the content contains separate lists for more than
+one distinct vendor or person (for example a Nathel screenshot showing both "Josh" and
+"Paul" orders, or two suppliers' lists stacked together), return each as its own entry in
+the "groups" array, each with its own vendor name and items. Otherwise leave "groups" empty
+and just fill "vendor" and "items".
 
 Return ONLY a JSON object:
 {{
@@ -182,6 +196,9 @@ Return ONLY a JSON object:
       "price": <price as a number only, no $ sign>,
       "unit": "<size/count/weight/grade — e.g. '72ct', '36ct', '2.5 inch', '5 pack', '50lb', '12/3lb bags', 'case', 'lb', 'bunch' — include ALL distinguishing size or count info here>"
     }}
+  ],
+  "groups": [
+    {{ "vendor": "<vendor name>", "items": [ {{ "item": ..., "price": ..., "unit": ... }} ] }}
   ]
 }}
 
@@ -253,6 +270,12 @@ VENDOR_KEYWORDS = [
     ("stew leonard", "Stew Leonards"),
     ("top line", "Top Line"),
     ("dottavio", "Dottavio"),
+    ("armotta", "Armotta"),
+    ("aramotta", "Armotta"),
+    ("donaldson", "Donaldson"),
+    ("cassaday", "Cassaday"),
+    ("tranquility", "Tranquility"),
+    ("landisville", "Landisville"),
 ]
 
 
@@ -623,7 +646,11 @@ def build_spreadsheet(item_vendor_map):
 import re
 import string
 
-SPECIALS_VENDORS = {"Sunday Specials", "Tuesday Specials", "Monday Specials", "Wednesday Specials"}
+# Specials can be offered any day of the week. Detection in the spreadsheet uses the
+# substring "specials" (case-insensitive), so dynamic labels like "Sunday Specials - TMK"
+# are still recognized; this set is kept for reference.
+SPECIALS_VENDORS = {f"{day} Specials" for day in
+                    ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")}
 
 ITEM_ALIASES = {
     # Plurals → singular
@@ -840,6 +867,17 @@ def merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendo
       post are replaced; items not re-posted keep their baseline price.
 
     Returns the vendor name if processed, or None if skipped."""
+    # If the extraction split into multiple vendor groups (e.g. a Nathel screenshot with
+    # both Josh's and Paul's orders), merge each group separately and ignore the top-level.
+    groups = result.get("groups")
+    if groups:
+        last = None
+        for g in groups:
+            if g and g.get("vendor") and g.get("items"):
+                last = merge_result_into_map(g, item_vendor_map, item_display_name,
+                                             seen_vendors, vendor_item_keys, fill_only=fill_only)
+        return last
+
     vendor = result.get("vendor")
     if not vendor:
         print("    Skipping — no vendor name found in content")
