@@ -156,7 +156,7 @@ def build_extract_prompt(product_names):
 VENDOR NAME RULES — identify the vendor using these exact mappings:
 - "TMK", "Tmk" → "TMK"
 - "Aurpack", "Aurback", "Auerbach", "Aurebach", "Auerpak", "Aureback" → "Aurpack"
-- "Nathel", "Nathel list", "Nathel prices" → "Nathel"
+- "Nathel", "Nathel & Nathel", "Nathel and Nathel", "Nathel list", "Nathel prices", "PD371" → "Nathel"
 - "Top line", "Top Line" → "Top Line"
 - "A and j", "A and J", "A & J", "A&J" → "A & J Produce Corp"
 - "Dagele", "DAGELE" → "Dagele Brothers"
