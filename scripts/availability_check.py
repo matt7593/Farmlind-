@@ -331,78 +331,114 @@ THIN_BORDER = Border(
 
 
 def build_spreadsheet(item_vendor_map):
+    """Matrix layout: vendors across the top (columns), items down the side (rows).
+    Each price cell holds a real number (currency-formatted) so spreadsheet formulas
+    work directly. Size/count/unit info is attached as a cell note."""
+    from openpyxl.comments import Comment
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Price Comparison"
 
-    headers = ["Item", "Price Range", "Cheapest Option", "Vendor", "Price", "Unit/Weight/Count"]
-    col_widths = [28, 16, 22, 28, 12, 18]
+    # ── Collect the full vendor list (columns) ──
+    all_vendors = set()
+    for entries in item_vendor_map.values():
+        for vendor, _price, _unit in entries:
+            all_vendors.add(vendor)
+    # Sort alphabetically, but push the "Specials" vendors to the end
+    def vendor_sort_key(v):
+        return (1 if v in SPECIALS_VENDORS else 0, v.lower())
+    vendors = sorted(all_vendors, key=vendor_sort_key)
 
-    for col, (h, w) in enumerate(zip(headers, col_widths), 1):
-        cell = ws.cell(row=1, column=col, value=h)
+    # ── Header row ──
+    # Col 1 = Item, Col 2 = Cheapest, Col 3 = Price Range, then one column per vendor
+    ws.cell(row=1, column=1, value="Item")
+    ws.cell(row=1, column=2, value="Cheapest")
+    ws.cell(row=1, column=3, value="Price Range")
+    vendor_col = {}
+    for i, vendor in enumerate(vendors):
+        col = 4 + i
+        vendor_col[vendor] = col
+        ws.cell(row=1, column=col, value=vendor)
+
+    for col in range(1, 4 + len(vendors)):
+        cell = ws.cell(row=1, column=col)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
-        cell.alignment = Alignment(horizontal="center")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = THIN_BORDER
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
 
-    ws.row_dimensions[1].height = 18
-    ws.freeze_panes = "A2"
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 16
+    for vendor in vendors:
+        ws.column_dimensions[openpyxl.utils.get_column_letter(vendor_col[vendor])].width = 14
 
+    ws.row_dimensions[1].height = 30
+    ws.freeze_panes = "D2"  # lock item name + cheapest + range columns and the header row
+
+    # ── Item rows ──
     row_idx = 2
     for item in sorted(item_vendor_map.keys()):
-        vendors = sorted(item_vendor_map[item], key=lambda x: x[1])
-        prices = [v[1] for v in vendors]
+        entries = item_vendor_map[item]
+
+        # Collapse to one (price, unit) per vendor — keep the cheapest if a vendor
+        # listed the same item at multiple sizes; remember all sizes for the note.
+        per_vendor = {}  # vendor -> {"price": float, "unit": str, "all": [(price, unit)]}
+        for vendor, price, unit in entries:
+            slot = per_vendor.setdefault(vendor, {"price": price, "unit": unit, "all": []})
+            slot["all"].append((price, unit))
+            if price < slot["price"]:
+                slot["price"] = price
+                slot["unit"] = unit
+
+        prices = [v["price"] for v in per_vendor.values()]
         low, high = min(prices), max(prices)
-        cheapest_vendor = vendors[0][0]
-        unit = vendors[0][2] if vendors[0][2] else ""
+        cheapest_vendor = min(per_vendor.items(), key=lambda kv: kv[1]["price"])[0]
         price_range = f"${low:.2f} - ${high:.2f}" if low != high else f"${low:.2f}"
 
-        item_start_row = row_idx
+        # Item name + cheapest + range
+        item_cell = ws.cell(row=row_idx, column=1, value=item)
+        item_cell.font = Font(bold=True)
+        item_cell.alignment = Alignment(horizontal="left", vertical="center")
+        item_cell.border = THIN_BORDER
+        for col, val in ((2, cheapest_vendor), (3, price_range)):
+            c = ws.cell(row=row_idx, column=col, value=val)
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = THIN_BORDER
 
-        for i, (vendor, price, vunit) in enumerate(vendors):
-            u = vunit or unit
+        # Price per vendor
+        for vendor, col in vendor_col.items():
+            cell = ws.cell(row=row_idx, column=col)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            slot = per_vendor.get(vendor)
+            if not slot:
+                continue  # vendor doesn't carry this item — leave blank
 
-            # Item and range only on first row of the group
-            if i == 0:
-                ws.cell(row=row_idx, column=1, value=item).font = Font(bold=True)
-                ws.cell(row=row_idx, column=2, value=price_range)
-                ws.cell(row=row_idx, column=3, value=cheapest_vendor)
-
-            ws.cell(row=row_idx, column=4, value=vendor)
-            ws.cell(row=row_idx, column=5, value=f"${price:.2f}")
-            ws.cell(row=row_idx, column=6, value=u)
+            price = slot["price"]
+            cell.value = price
+            cell.number_format = '"$"#,##0.00'
 
             # Color: green = cheapest, red = most expensive, yellow = middle
             if price == low:
-                fill = GREEN_FILL
+                cell.fill = GREEN_FILL
             elif price == high and low != high:
-                fill = RED_FILL
+                cell.fill = RED_FILL
             else:
-                fill = YELLOW_FILL
+                cell.fill = YELLOW_FILL
 
-            for col in range(1, 7):
-                cell = ws.cell(row=row_idx, column=col)
-                cell.border = THIN_BORDER
-                cell.alignment = Alignment(horizontal="center" if col > 1 else "left")
-                if col >= 4:
-                    cell.fill = fill
+            # Attach size/unit info as a cell note
+            note_lines = []
+            for p, u in sorted(slot["all"]):
+                if u:
+                    note_lines.append(f"${p:.2f} — {u}")
+                else:
+                    note_lines.append(f"${p:.2f}")
+            note_text = "\n".join(note_lines)
+            if note_text:
+                cell.comment = Comment(note_text, "Farmlind Bot")
 
-            row_idx += 1
-
-        # Merge item/range/cheapest cells across the group rows
-        if len(vendors) > 1:
-            for col in (1, 2, 3):
-                ws.merge_cells(
-                    start_row=item_start_row, start_column=col,
-                    end_row=row_idx - 1, end_column=col
-                )
-                ws.cell(row=item_start_row, column=col).alignment = Alignment(
-                    horizontal="left" if col == 1 else "center",
-                    vertical="center"
-                )
-
-        # Empty spacer row between items
         row_idx += 1
 
     buf = io.BytesIO()
