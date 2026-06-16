@@ -87,6 +87,19 @@
 
     .tab.active .tab-count { background: #2d5a2718; color: #2d5a27; }
 
+    /* ── Day sections ── */
+    .day-section { margin-bottom: 32px; }
+    .day-section-header {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #2d5a27;
+      border-bottom: 2px solid #2d5a27;
+      padding-bottom: 6px;
+      margin-bottom: 14px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
     /* ── Main ── */
     main { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
 
@@ -669,105 +682,106 @@
   // ── Render ─────────────────────────────────────────────────────────────────
   function render(orders) {
     allOrders = orders;
-    // Sort customers by their most recent order timestamp (newest first)
-    const customers = Object.keys(orders).sort((a, b) => {
-      const latest = list => list.reduce((max, o) => {
-        const t = o.timestamp ? new Date(o.timestamp).getTime() : 0;
-        return t > max ? t : max;
-      }, 0);
-      return latest(orders[b]) - latest(orders[a]);
+
+    // Flatten all orders into a single list with customer name attached
+    const flat = [];
+    for (const [customerName, orderList] of Object.entries(orders)) {
+      for (const o of orderList) {
+        flat.push({ customerName, ...o });
+      }
+    }
+
+    // Sort newest first
+    flat.sort((a, b) => {
+      const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tb - ta;
     });
+
+    // Group by local date key (YYYY-MM-DD)
+    const dayMap = {};
+    for (const o of flat) {
+      const dk = o.timestamp ? localDateKey(new Date(o.timestamp)) : 'unknown';
+      if (!dayMap[dk]) dayMap[dk] = [];
+      dayMap[dk].push(o);
+    }
+    const dayKeys = Object.keys(dayMap).sort().reverse(); // newest day first
 
     const tabs = ['all', 'restaurant', 'grocery', 'unknown'];
 
-    // Count customers per tab
-    const counts = { all: 0, restaurant: 0, grocery: 0, unknown: 0 };
-
-    for (const name of customers) {
-      const types = new Set(orders[name].map(o => o.type || 'unknown'));
-      counts.all++;
-      for (const t of types) if (counts[t] !== undefined) counts[t]++;
+    // Count orders per tab
+    const counts = { all: flat.length, restaurant: 0, grocery: 0, unknown: 0 };
+    for (const o of flat) {
+      const tp = o.type || 'unknown';
+      if (counts[tp] !== undefined) counts[tp]++;
     }
-
     for (const t of tabs) {
       document.getElementById('cnt-' + t).textContent = counts[t];
     }
 
     for (const t of tabs) {
       const grid = document.getElementById('grid-' + t);
-      const filtered = t === 'all'
-        ? customers
-        : customers.filter(name => orders[name].some(o => (o.type || 'unknown') === t));
+      const tabFlat = t === 'all' ? flat : flat.filter(o => (o.type || 'unknown') === t);
 
-      if (filtered.length === 0) {
+      if (tabFlat.length === 0) {
         const label = t === 'restaurant' ? 'Restaurant Sale Orders' : t === 'grocery' ? 'Store Sale Orders' : t === 'unknown' ? 'uncategorized' : '';
         grid.innerHTML = `<div class="empty"><span>${t === 'restaurant' ? '🍽' : t === 'grocery' ? '🛒' : '🥬'}</span>No ${label} orders yet.</div>`;
         continue;
       }
 
-      // Remove stale cards
-      const incoming = new Set(filtered);
-      for (const el of grid.querySelectorAll('.card')) {
-        if (!incoming.has(el.dataset.customer)) el.remove();
+      // Group this tab's orders by day
+      const tabDayMap = {};
+      for (const o of tabFlat) {
+        const dk = o.timestamp ? localDateKey(new Date(o.timestamp)) : 'unknown';
+        if (!tabDayMap[dk]) tabDayMap[dk] = [];
+        tabDayMap[dk].push(o);
       }
+      const tabDayKeys = Object.keys(tabDayMap).sort().reverse();
 
-      for (const name of filtered) {
-        const orderList = orders[name];
-        // For non-all tabs, only show orders matching that type
-        const visibleOrders = (t === 'all' ? orderList : orderList.filter(o => (o.type || 'unknown') === t))
-          .slice().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      grid.innerHTML = tabDayKeys.map(dk => {
+        const dayOrders = tabDayMap[dk];
+        const d = dk !== 'unknown' ? new Date(dk + 'T12:00:00') : null;
+        const dayLabel = d
+          ? d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
+          : 'Unknown Date';
 
-        let card = grid.querySelector(`.card[data-customer="${CSS.escape(name)}"]`);
-        if (!card) {
-          card = document.createElement('div');
-          card.className = 'card';
-          card.dataset.customer = name;
-        }
-        grid.appendChild(card); // always append to maintain sorted order
-
-        // Get unique senders for this customer
-        const senders = [...new Set(visibleOrders.map(o => o.sender).filter(Boolean))];
-
-        card.innerHTML = `
-          <div class="card-header">
-            <div style="flex:1;min-width:0">
-              <h2>${esc(name)} <span class="order-count">${visibleOrders.length}</span></h2>
-              ${senders.length ? `<div style="font-size:.72rem;opacity:.75;margin-top:2px">via ${senders.map(s => esc(s)).join(', ')}</div>` : ''}
-            </div>
-            <button class="clear-btn" onclick="clearCustomer('${esc(name)}')">Clear all</button>
-          </div>
-          <div class="orders-list">
-            ${visibleOrders.map(o => {
+        return `
+          <div class="day-section">
+            <div class="day-section-header">${dayLabel}</div>
+            ${dayOrders.map(o => {
               const type = o.type || 'unknown';
               const otherType = type === 'restaurant' ? 'grocery' : type === 'grocery' ? 'restaurant' : 'restaurant';
               const otherLabel = otherType === 'restaurant' ? '🍽 Move to Restaurant Sale Orders' : '🛒 Move to Store Sale Orders';
+              const links = o.slackLinks && o.slackLinks.length ? o.slackLinks : (o.slackLink ? [o.slackLink] : []);
               return `
-              <div class="order-block">
-                <div class="order-date">
-                  📅 ${fmtDate(o.timestamp)}
-                  ${o.slackLink ? `<a href="${esc(o.slackLink)}" target="_blank" style="margin-left:8px;font-size:.72rem;color:#2d5a27;text-decoration:none;font-weight:500" title="View in Slack">↗ Open in Slack</a>` : ''}
+              <div class="card">
+                <div class="card-header">
+                  <div style="flex:1;min-width:0">
+                    <h2>${esc(o.customerName)}</h2>
+                    ${o.sender ? `<div style="font-size:.72rem;opacity:.75;margin-top:2px">via ${esc(o.sender)}</div>` : ''}
+                  </div>
+                  <div style="display:flex;gap:6px;align-items:center">
+                    <span class="type-badge ${type}">${type === 'restaurant' ? 'Restaurant Sale Orders' : type === 'grocery' ? 'Store Sale Orders' : type}</span>
+                    <button class="delete-order" title="Remove" onclick="deleteOrder('${esc(o.customerName)}', ${o.id})">✕</button>
+                  </div>
                 </div>
-                <div class="order-meta">
-                  <span>🕐 ${fmtTime(o.timestamp)}</span>
-                  ${o.sender ? `<span style="color:#666">by ${esc(o.sender)}</span>` : ''}
-                  <span class="type-badge ${type}">${type === 'restaurant' ? 'Restaurant Sale Orders' : type === 'grocery' ? 'Store Sale Orders' : type}</span>
-                  <span class="spacer"></span>
-                  <button class="move-btn" onclick="moveOrder('${esc(name)}', ${o.id}, '${otherType}')">${otherLabel}</button>
-                  <button class="delete-order" title="Remove" onclick="deleteOrder('${esc(name)}', ${o.id})">✕</button>
+                <div class="orders-list">
+                  <div class="order-block">
+                    <div class="order-meta">
+                      <span>🕐 ${fmtTime(o.timestamp)}</span>
+                      ${links.map(l => `<a href="${esc(l)}" target="_blank" style="font-size:.72rem;color:#2d5a27;text-decoration:none;font-weight:500">↗ Open in Slack</a>`).join('')}
+                      <span class="spacer"></span>
+                      <button class="move-btn" onclick="moveOrder('${esc(o.customerName)}', ${o.id}, '${otherType}')">${otherLabel}</button>
+                    </div>
+                    <table class="items-table">
+                      ${o.items.map(i => `<tr><td>${i.qty}</td><td>${esc(i.item)}</td></tr>`).join('')}
+                    </table>
+                  </div>
                 </div>
-                <table class="items-table">
-                  ${o.items.map(i => `<tr><td>${i.qty}</td><td>${esc(i.item)}</td></tr>`).join('')}
-                </table>
               </div>`;
             }).join('')}
           </div>`;
-      }
-
-      // Sort DOM children alphabetically
-      filtered.forEach((name, i) => {
-        const card = grid.querySelector(`.card[data-customer="${CSS.escape(name)}"]`);
-        if (card && grid.children[i] !== card) grid.appendChild(card);
-      });
+      }).join('');
     }
   }
 
