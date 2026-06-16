@@ -23,7 +23,7 @@ NOTIFY_EMAILS = TEST_EMAILS if os.environ.get("TEST_MODE") == "true" else ALL_EM
 CHANNEL_NAME = "availability-list-changes"
 REFERENCE_FILE = os.path.join(os.path.dirname(__file__), "product_reference.xlsx")
 
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=120.0, max_retries=2)
 
 
 # ── Product reference loader ───────────────────────────────────────────────────
@@ -236,10 +236,47 @@ def pdf_page_texts(file_bytes):
     return [(page.extract_text() or "") for page in reader.pages]
 
 
-def extract_prices_from_pdf_chunked(file_bytes, product_names, pages_per_chunk=2):
+# Cheap, no-API vendor detection from raw text — used to skip older duplicate PDFs
+# without paying for a Claude call. Keyword (lowercase) -> canonical vendor name.
+VENDOR_KEYWORDS = [
+    ("nathel & nathel", "Nathel"),
+    ("nathel", "Nathel"),
+    ("pd371", "Nathel"),
+    ("aurpack", "Aurpack"),
+    ("auerpak", "Aurpack"),
+    ("auerbach", "Aurpack"),
+    ("aurback", "Aurpack"),
+    ("a & j produce", "A & J Produce Corp"),
+    ("dagele", "Dagele Brothers"),
+    ("triple j", "Triple J"),
+    ("andy boy", "Andy Boy"),
+    ("stew leonard", "Stew Leonards"),
+    ("top line", "Top Line"),
+    ("dottavio", "Dottavio"),
+]
+
+
+def guess_vendor_from_text(text):
+    """Best-effort vendor name from raw text using known keywords. Returns None if
+    no confident match (caller should then fall back to the model)."""
+    low = text.lower()
+    for kw, canonical in VENDOR_KEYWORDS:
+        if kw in low:
+            return canonical
+    return None
+
+
+def extract_prices_from_pdf_chunked(file_bytes, product_names, pages_per_chunk=2,
+                                    seen_check=None):
     """Extract prices from a large multi-page PDF by processing it in page-chunks,
     so a long list (hundreds of items) is never truncated by the model's output limit.
-    Returns a single merged {"vendor": ..., "items": [...]} dict."""
+
+    seen_check: optional callable(vendor) -> bool. Called as soon as the vendor is
+    identified (after the first chunk). If it returns True, the vendor has already been
+    processed from a fresher source, so we stop immediately and return None — avoiding
+    dozens of wasted API calls on duplicate/older lists.
+
+    Returns a single merged {"vendor": ..., "items": [...]} dict, or None if skipped."""
     pages = pdf_page_texts(file_bytes)
     if not pages or not any(p.strip() for p in pages):
         # No extractable text (scanned PDF) — fall back to sending the whole document
@@ -249,6 +286,14 @@ def extract_prices_from_pdf_chunked(file_bytes, product_names, pages_per_chunk=2
                        "data": base64.b64encode(file_bytes).decode()}
         }
         return extract_prices_from_content([block], "PDF", product_names)
+
+    # No-API shortcut: if we can recognize the vendor from the raw text and that
+    # vendor was already handled, skip the whole PDF without any Claude calls.
+    if seen_check:
+        guessed = guess_vendor_from_text("\n".join(pages[:2]))
+        if guessed and seen_check(guessed):
+            print(f"    Vendor {guessed} already processed (text match) — skipping PDF, no API calls")
+            return None
 
     vendor = None
     all_items = []
@@ -270,6 +315,11 @@ def extract_prices_from_pdf_chunked(file_bytes, product_names, pages_per_chunk=2
             continue
         if not vendor and result.get("vendor"):
             vendor = result["vendor"]
+            # Bail out early if this vendor was already handled (e.g. an older
+            # duplicate post). Saves chunk-reading the rest of the PDF.
+            if seen_check and seen_check(vendor):
+                print(f"    Vendor {vendor} already processed — skipping rest of PDF")
+                return None
         all_items.extend(result.get("items", []))
 
     return {"vendor": vendor, "items": all_items}
@@ -1014,7 +1064,10 @@ def main():
             # PDFs first (the actual price lists), then the text/image bundle.
             for fname, fbytes in pdf_files:
                 print(f"  PDF: {fname}")
-                pres = extract_prices_from_pdf_chunked(fbytes, product_names)
+                pres = extract_prices_from_pdf_chunked(
+                    fbytes, product_names,
+                    seen_check=lambda v: v in seen_vendors
+                )
                 if pres:
                     merge_result_into_map(pres, item_vendor_map, item_display_name,
                                           seen_vendors, vendor_item_keys)
