@@ -209,6 +209,10 @@ Rules:
 - ALWAYS write the variety/descriptor BEFORE the base fruit/vegetable name (e.g., "Fuji Apple" NOT "Apple Fuji", "Navel Orange" NOT "Orange Navel", "Hass Avocado" NOT "Avocado Hass", "Roma Tomato" NOT "Tomato Roma", "Bartlett Pear" NOT "Pear Bartlett").
 - Use SINGULAR form for all item names (e.g., "Strawberry" not "Strawberries", "Avocado" not "Avocados", "Lime" not "Limes").
 - If the same item appears at multiple prices, put the distinguishing size/count/grade in the unit field so they can be told apart.
+- ALWAYS populate the "unit" field for EVERY item. Capture any count, size, pack, or weight
+  shown — e.g. "72ct", "36ct", "12/3lb", "50lb", "5 pack", "18 oz", "1 lb", "bunch", "12ct".
+  If the list shows no explicit size/count for an item, infer the natural selling unit
+  ("case", "lb", "bunch", "each") rather than leaving it blank. Never return an empty unit.
 - Price must be a number only — no $ symbol, no slashes.
 - If a price range is given (e.g. 1.00-1.50), use the lower number.
 - Do NOT include items with no price.
