@@ -531,8 +531,8 @@ THIN_BORDER = Border(
 
 def build_spreadsheet(item_vendor_map):
     """Matrix layout: vendors across the top (columns), items down the side (rows).
-    Each price cell holds a real number (currency-formatted) so spreadsheet formulas
-    work directly. Size/count/unit info is attached as a cell note."""
+    Each vendor gets TWO columns: a numeric price (currency-formatted, so formulas work)
+    and a unit/count column to its right. The unit is also kept as a hover note."""
     from openpyxl.comments import Comment
 
     wb = openpyxl.Workbook()
@@ -550,18 +550,24 @@ def build_spreadsheet(item_vendor_map):
     vendors = sorted(all_vendors, key=vendor_sort_key)
 
     # ── Header row ──
-    # Col 1 = Item, Col 2 = Cheapest, Col 3 = Price Range, then one column per vendor
+    # Col 1 = Item, Col 2 = Cheapest, Col 3 = Price Range, then per vendor a
+    # price column followed by a unit column.
     ws.cell(row=1, column=1, value="Item")
     ws.cell(row=1, column=2, value="Cheapest")
     ws.cell(row=1, column=3, value="Price Range")
-    vendor_col = {}
-    for i, vendor in enumerate(vendors):
-        col = 4 + i
-        vendor_col[vendor] = col
+    vendor_price_col = {}
+    vendor_unit_col = {}
+    col = 4
+    for vendor in vendors:
+        vendor_price_col[vendor] = col
+        vendor_unit_col[vendor] = col + 1
         ws.cell(row=1, column=col, value=vendor)
+        ws.cell(row=1, column=col + 1, value=f"{vendor} Unit")
+        col += 2
+    last_col = col - 1
 
-    for col in range(1, 4 + len(vendors)):
-        cell = ws.cell(row=1, column=col)
+    for c in range(1, last_col + 1):
+        cell = ws.cell(row=1, column=c)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -571,7 +577,8 @@ def build_spreadsheet(item_vendor_map):
     ws.column_dimensions["B"].width = 22
     ws.column_dimensions["C"].width = 16
     for vendor in vendors:
-        ws.column_dimensions[openpyxl.utils.get_column_letter(vendor_col[vendor])].width = 14
+        ws.column_dimensions[openpyxl.utils.get_column_letter(vendor_price_col[vendor])].width = 11
+        ws.column_dimensions[openpyxl.utils.get_column_letter(vendor_unit_col[vendor])].width = 12
 
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = "D2"  # lock item name + cheapest + range columns and the header row
@@ -601,42 +608,48 @@ def build_spreadsheet(item_vendor_map):
         item_cell.font = Font(bold=True)
         item_cell.alignment = Alignment(horizontal="left", vertical="center")
         item_cell.border = THIN_BORDER
-        for col, val in ((2, cheapest_vendor), (3, price_range)):
-            c = ws.cell(row=row_idx, column=col, value=val)
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border = THIN_BORDER
+        for c, val in ((2, cheapest_vendor), (3, price_range)):
+            cc = ws.cell(row=row_idx, column=c, value=val)
+            cc.alignment = Alignment(horizontal="center", vertical="center")
+            cc.border = THIN_BORDER
 
-        # Price per vendor
-        for vendor, col in vendor_col.items():
-            cell = ws.cell(row=row_idx, column=col)
-            cell.border = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+        # Price + unit per vendor
+        for vendor in vendors:
+            pcol = vendor_price_col[vendor]
+            ucol = vendor_unit_col[vendor]
+            pcell = ws.cell(row=row_idx, column=pcol)
+            ucell = ws.cell(row=row_idx, column=ucol)
+            pcell.border = THIN_BORDER
+            ucell.border = THIN_BORDER
+            pcell.alignment = Alignment(horizontal="center", vertical="center")
+            ucell.alignment = Alignment(horizontal="center", vertical="center")
+
             slot = per_vendor.get(vendor)
             if not slot:
-                continue  # vendor doesn't carry this item — leave blank
+                continue  # vendor doesn't carry this item — leave both cells blank
 
             price = slot["price"]
-            cell.value = price
-            cell.number_format = '"$"#,##0.00'
+            pcell.value = price
+            pcell.number_format = '"$"#,##0.00'
+            ucell.value = slot["unit"] or ""
 
             # Color: green = cheapest, red = most expensive, yellow = middle
             if price == low:
-                cell.fill = GREEN_FILL
+                fill = GREEN_FILL
             elif price == high and low != high:
-                cell.fill = RED_FILL
+                fill = RED_FILL
             else:
-                cell.fill = YELLOW_FILL
+                fill = YELLOW_FILL
+            pcell.fill = fill
+            ucell.fill = fill
 
-            # Attach size/unit info as a cell note
+            # Attach size/unit info as a cell note (lists all sizes if more than one)
             note_lines = []
             for p, u in sorted(slot["all"]):
-                if u:
-                    note_lines.append(f"${p:.2f} — {u}")
-                else:
-                    note_lines.append(f"${p:.2f}")
+                note_lines.append(f"${p:.2f} — {u}" if u else f"${p:.2f}")
             note_text = "\n".join(note_lines)
             if note_text:
-                cell.comment = Comment(note_text, "Farmlind Bot")
+                pcell.comment = Comment(note_text, "Farmlind Bot")
 
         row_idx += 1
 
