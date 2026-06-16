@@ -596,11 +596,22 @@
     const groceryEntries    = day.entries.filter(e => e.type === 'grocery');
     const restaurantEntries = day.entries.filter(e => e.type === 'restaurant');
 
+    function normalizeItemKey(name) {
+      let s = name.toLowerCase().trim();
+      // Remove size/count/weight suffixes like "6ct", "24ct", "1lb", "2lb", "12oz"
+      s = s.replace(/\b\d+\s*(ct|lb|lbs|oz|pk|pcs?|bags?|bunches?|flat|case|box|bx|ea)\b/gi, ' ');
+      // Collapse spaces
+      s = s.replace(/\s+/g, ' ').trim();
+      // Strip trailing 's' for simple plurals — skip words ending in ss/us/is/as/ous/es where base ends in e
+      if (s.length > 4 && /[^suis]s$/.test(s)) s = s.slice(0, -1);
+      return s;
+    }
+
     function buildTotals(entries) {
       const totals = {};
       for (const e of entries) {
         for (const item of e.items) {
-          const k = item.item.toLowerCase().trim();
+          const k = normalizeItemKey(item.item);
           if (!totals[k]) totals[k] = { name: item.item, qty: 0, category: item.category || 'Other' };
           totals[k].qty += item.qty;
         }
@@ -658,11 +669,13 @@
   // ── Render ─────────────────────────────────────────────────────────────────
   function render(orders) {
     allOrders = orders;
-    // Sort by most recent order first
+    // Sort customers by their most recent order timestamp (newest first)
     const customers = Object.keys(orders).sort((a, b) => {
-      const latestA = Math.max(...orders[a].map(o => new Date(o.timestamp)));
-      const latestB = Math.max(...orders[b].map(o => new Date(o.timestamp)));
-      return latestB - latestA;
+      const latest = list => list.reduce((max, o) => {
+        const t = o.timestamp ? new Date(o.timestamp).getTime() : 0;
+        return t > max ? t : max;
+      }, 0);
+      return latest(orders[b]) - latest(orders[a]);
     });
 
     const tabs = ['all', 'restaurant', 'grocery', 'unknown'];

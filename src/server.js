@@ -224,8 +224,9 @@ async function processMessage(message, channelId, client) {
           senderName = info.user.real_name || info.user.profile?.display_name || info.user.name;
         } catch { /* non-fatal */ }
 
-        const customerName = parsed.customerName || senderName;
+        const rawName = parsed.customerName || senderName;
         const orders = loadOrders();
+        const customerName = findCustomerKey(orders, rawName) || rawName;
         if (!orders[customerName]) orders[customerName] = [];
 
         const imgTs = ts + '_img_' + file.id;
@@ -282,8 +283,9 @@ async function processMessage(message, channelId, client) {
     senderName = info.user.real_name || info.user.profile?.display_name || info.user.name;
   } catch { /* non-fatal */ }
 
-  const customerName = parsed.customerName || senderName;
+  const rawName = parsed.customerName || senderName;
   const orders = loadOrders();
+  const customerName = findCustomerKey(orders, rawName) || rawName;
   if (!orders[customerName]) orders[customerName] = [];
 
   if (orders[customerName].some(o => o.ts === ts)) return;
@@ -361,6 +363,60 @@ function findBaseKey(orders, baseName) {
   // 2. Partial match — base name is contained in customer name (e.g. "mangia" matches "mangia pizza")
   const partial = keys.find(k => k.toLowerCase().includes(lower) || lower.includes(k.toLowerCase()));
   return partial || null;
+}
+
+// Find existing customer key with lenient matching (case, spaces, typos)
+function findCustomerKey(orders, name) {
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const nameNorm = norm(name);
+  const keys = Object.keys(orders).filter(k => !/\badd\b/i.test(k));
+
+  // Exact case-insensitive
+  const exact = keys.find(k => k.toLowerCase() === name.toLowerCase());
+  if (exact) return exact;
+
+  // Normalized (strip punctuation/spaces) — catches "Shop Rite" vs "ShopRite"
+  const stripped = keys.find(k => norm(k) === nameNorm);
+  if (stripped) return stripped;
+
+  // One contains the other (short name ≥ 4 chars to avoid false matches)
+  if (nameNorm.length >= 4) {
+    const partial = keys.find(k => {
+      const kn = norm(k);
+      return kn.includes(nameNorm) || nameNorm.includes(kn);
+    });
+    if (partial) return partial;
+  }
+
+  return null;
+}
+
+// On startup: merge duplicate customer entries that differ only by case/spacing
+function mergeDuplicateCustomers() {
+  const orders = loadOrders();
+  let changed = false;
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const seen = {}; // normKey → canonical customer name
+
+  for (const name of Object.keys(orders)) {
+    if (/\badd\b/i.test(name)) continue;
+    const key = norm(name);
+    if (seen[key] && seen[key] !== name) {
+      // Merge this duplicate into the canonical entry
+      orders[seen[key]].push(...orders[name]);
+      orders[seen[key]].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+      delete orders[name];
+      changed = true;
+      console.log(`Merged duplicate customer "${name}" → "${seen[key]}"`);
+    } else {
+      seen[key] = name;
+    }
+  }
+
+  if (changed) {
+    saveOrders(orders);
+    console.log('Duplicate customer merge complete.');
+  }
 }
 
 function backfillCategories() {
@@ -549,6 +605,7 @@ web.listen(PORT, () => console.log(`Dashboard → http://localhost:${PORT}`));
   } catch (e) {
     console.error('Could not get team domain:', e.message);
   }
+  mergeDuplicateCustomers();
   migrateAddOrders();
   backfillCategories();
   await backfillToday(slackApp.client);
