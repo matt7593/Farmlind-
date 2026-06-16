@@ -657,38 +657,68 @@ def normalize_item_name(name):
 STATIC_LISTS_DIR = os.path.join(os.path.dirname(__file__), "static_price_lists")
 
 
-def merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendors):
+def merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendors,
+                          vendor_item_keys, fill_only=False):
     """Merge one extraction result into the running item->vendor map.
-    Returns the vendor name if merged, or None if skipped."""
+
+    fill_only=False (Slack): the freshest source for a vendor. Skipped entirely if that
+      vendor was already merged (older message for the same vendor).
+    fill_only=True (static baseline): only adds items for keys this vendor hasn't already
+      provided from a fresher source. So when Nathel posts in Slack, only the items in that
+      post are replaced; items not re-posted keep their baseline price.
+
+    Returns the vendor name if processed, or None if skipped."""
     vendor = result.get("vendor")
     if not vendor:
         print("    Skipping — no vendor name found in content")
         return None
-    # Only use the most recent source per vendor (Slack is processed first, newest-first)
-    if vendor in seen_vendors:
-        print(f"    Skipping older {vendor} source")
-        return None
-    seen_vendors.add(vendor)
+
+    if not fill_only:
+        # Slack: only the most recent message per vendor counts
+        if vendor in seen_vendors:
+            print(f"    Skipping older {vendor} source")
+            return None
+        seen_vendors.add(vendor)
+
     items = result.get("items", [])
-    print(f"    Vendor: {vendor} — {len(items)} items")
+    added = 0
+    skipped = 0
     for entry in items:
         item = entry.get("item", "").strip()
         price = entry.get("price")
         unit = entry.get("unit", "") or ""
-        if item and price is not None:
-            try:
-                key = normalize_item_name(item)
-                if key not in item_display_name:
-                    item_display_name[key] = item
-                row = (vendor, float(price), unit.strip())
-                if row not in item_vendor_map[key]:
-                    item_vendor_map[key].append(row)
-            except (ValueError, TypeError):
-                pass
+        if not item or price is None:
+            continue
+        try:
+            key = normalize_item_name(item)
+        except (ValueError, TypeError):
+            continue
+        # In fill-only mode, don't overwrite an item this vendor already supplied
+        # from a fresher (Slack) source.
+        if fill_only and key in vendor_item_keys[vendor]:
+            skipped += 1
+            continue
+        try:
+            price_f = float(price)
+        except (ValueError, TypeError):
+            continue
+        if key not in item_display_name:
+            item_display_name[key] = item
+        row = (vendor, price_f, unit.strip())
+        if row not in item_vendor_map[key]:
+            item_vendor_map[key].append(row)
+        vendor_item_keys[vendor].add(key)
+        added += 1
+
+    if fill_only:
+        print(f"    Vendor: {vendor} — {added} baseline items added, {skipped} kept fresh from Slack")
+    else:
+        print(f"    Vendor: {vendor} — {added} items")
     return vendor
 
 
-def process_static_lists(item_vendor_map, item_display_name, seen_vendors, product_names):
+def process_static_lists(item_vendor_map, item_display_name, seen_vendors,
+                         vendor_item_keys, product_names):
     """Parse any baseline price lists bundled in static_price_lists/ and merge them in.
     These are vendors whose lists are NOT posted to Slack. A newer Slack post for the
     same vendor (processed earlier) takes priority via seen_vendors."""
@@ -732,7 +762,8 @@ def process_static_lists(item_vendor_map, item_display_name, seen_vendors, produ
             print(f"  Parsing static price list: {filename}...")
             result = extract_prices_from_content(content_blocks, "Static List", product_names)
             if result:
-                merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendors)
+                merge_result_into_map(result, item_vendor_map, item_display_name,
+                                      seen_vendors, vendor_item_keys, fill_only=True)
         except Exception as e:
             print(f"  Static list error ({filename}): {e}")
 
@@ -767,6 +798,9 @@ def main():
     item_display_name = {}
     # track which vendors we've already processed (specials only use most recent)
     seen_vendors = set()
+    # vendor -> set of normalized item keys already supplied (Slack takes priority,
+    # static baseline only fills the gaps)
+    vendor_item_keys = defaultdict(set)
 
     for msg in messages:
         ts = msg.get("ts", "0")
@@ -820,14 +854,16 @@ def main():
         try:
             result = extract_prices_from_content(content_blocks, sender_name, product_names)
             if result:
-                merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendors)
+                merge_result_into_map(result, item_vendor_map, item_display_name,
+                                      seen_vendors, vendor_item_keys)
         except Exception as e:
             print(f"  Parse error: {e}")
 
     # Merge in baseline price lists not posted to Slack (e.g. Nathel).
     # Slack was processed first, so a newer Slack post for the same vendor wins.
     print("\nProcessing static (non-Slack) price lists...")
-    process_static_lists(item_vendor_map, item_display_name, seen_vendors, product_names)
+    process_static_lists(item_vendor_map, item_display_name, seen_vendors,
+                         vendor_item_keys, product_names)
 
     if not item_vendor_map:
         print("No price data found — nothing to send.")
