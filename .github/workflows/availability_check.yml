@@ -4,6 +4,9 @@ on:
   schedule:
     # Every day at 8pm ET (00:00 UTC)
     - cron: '0 0 * * *'
+    # Thursday mornings ~6am-3:40pm ET (10:00-19:40 UTC), every 20 min — watch for
+    # Dottavio's price-list email and send the updated spreadsheet once it arrives.
+    - cron: '*/20 10-19 * * 4'
   workflow_dispatch:
     inputs:
       force_send:
@@ -35,6 +38,8 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN_1: ${{ secrets.GMAIL_REFRESH_TOKEN_1 }}
+          GMAIL_REFRESH_TOKEN_2: ${{ secrets.GMAIL_REFRESH_TOKEN_2 }}
           FORCE_SEND: ${{ github.event.inputs.force_send }}
           TEST_MODE: ${{ github.event.inputs.test_mode }}
+          RUN_MODE: ${{ github.event.schedule == '*/20 10-19 * * 4' && 'dottavio_watch' || 'daily' }}
         run: python scripts/availability_check.py

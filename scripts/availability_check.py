@@ -163,6 +163,7 @@ VENDOR NAME RULES — identify the vendor using these exact mappings:
 - "Triple J" → "Triple J"
 - "Andy boy", "Andy Boy" → "Andy Boy"
 - "Stews", "Stew", "Stew Leonard" → "Stew Leonards"
+- "Dottavio", "M Dottavio", "M. Dottavio", "Dottavio Produce", "mdottavioproduce" → "Dottavio"
 - If the content says "Sunday Specials" or "Sunday prices" → vendor is "Sunday Specials"
 - If the content says "Tuesday Specials" → vendor is "Tuesday Specials"
 - If the content says "Monday Specials" → vendor is "Monday Specials"
@@ -273,16 +274,88 @@ def extract_prices_from_pdf_chunked(file_bytes, product_names, pages_per_chunk=2
 
 # ── Gmail helpers ──────────────────────────────────────────────────────────────
 
-def get_access_token():
+GMAIL_REFRESH_TOKEN_2 = os.environ.get("GMAIL_REFRESH_TOKEN_2")  # farmlindproduce@gmail.com
+
+
+def get_access_token(refresh_token=None):
     data = urllib.parse.urlencode({
         "client_id": GMAIL_CLIENT_ID,
         "client_secret": GMAIL_CLIENT_SECRET,
-        "refresh_token": GMAIL_REFRESH_TOKEN,
+        "refresh_token": refresh_token or GMAIL_REFRESH_TOKEN,
         "grant_type": "refresh_token"
     }).encode()
     req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read())["access_token"]
+
+
+def gmail_get(access_token, path, params=None):
+    url = f"https://gmail.googleapis.com/gmail/v1{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token}"})
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
+def _gmail_extract_text(part):
+    """Recursively pull the text/plain body from a Gmail message payload."""
+    mime = part.get("mimeType", "")
+    body_data = part.get("body", {}).get("data", "")
+    if mime == "text/plain" and body_data:
+        return base64.urlsafe_b64decode(body_data + "==").decode("utf-8", errors="ignore")
+    for sub in part.get("parts", []):
+        txt = _gmail_extract_text(sub)
+        if txt:
+            return txt
+    # Fall back to HTML if no plain part
+    if mime == "text/html" and body_data:
+        import re as _re
+        html = base64.urlsafe_b64decode(body_data + "==").decode("utf-8", errors="ignore")
+        return _re.sub(r"<[^>]+>", " ", html)
+    return ""
+
+
+def fetch_latest_dottavio_email(days=10):
+    """Search the Gmail accounts for the most recent Dottavio price-list email.
+    Returns (body_text, internal_date_ms) or (None, None) if not found."""
+    accounts = []
+    if GMAIL_REFRESH_TOKEN_2:
+        accounts.append(("farmlindproduce@gmail.com", GMAIL_REFRESH_TOKEN_2))
+    accounts.append(("matt@farmlindproduce.com", GMAIL_REFRESH_TOKEN))
+
+    query = f"from:(dottavio OR mdottavioproduce.com) newer_than:{days}d"
+    best_text, best_ts = None, -1
+    for email_addr, refresh in accounts:
+        try:
+            token = get_access_token(refresh)
+            res = gmail_get(token, "/users/me/messages", {"q": query, "maxResults": 10})
+            for m in res.get("messages", []):
+                full = gmail_get(token, f"/users/me/messages/{m['id']}", {"format": "full"})
+                ts = int(full.get("internalDate", 0))
+                if ts > best_ts:
+                    text = _gmail_extract_text(full.get("payload", {}))
+                    if text.strip():
+                        best_text, best_ts = text, ts
+        except Exception as e:
+            print(f"  Dottavio email fetch error ({email_addr}): {e}")
+    return best_text, (best_ts if best_ts >= 0 else None)
+
+
+def availability_already_sent_today(today_et):
+    """True if an Availability Price Comparison email was already sent today (ET),
+    checked in matt@'s Sent mail. Prevents the Thursday watch from sending repeatedly."""
+    try:
+        token = get_access_token()  # matt@ (sender)
+        after = today_et.strftime("%Y/%m/%d")
+        res = gmail_get(token, "/users/me/messages", {
+            "q": f'in:sent subject:"Availability Price Comparison" after:{after}',
+            "maxResults": 5
+        })
+        return len(res.get("messages", [])) > 0
+    except Exception as e:
+        print(f"  Sent-check error: {e}")
+        return False
 
 
 def send_email_with_attachment(access_token, subject, body_text, xlsx_bytes):
@@ -835,11 +908,40 @@ def main():
 
     from datetime import timezone, timedelta
     et = timezone(timedelta(hours=-4))
-    today_weekday = datetime.now(et).weekday()  # 1=Tuesday, 5=Saturday
+    now_et = datetime.now(et)
+    today_et = now_et.date()
+    today_weekday = now_et.weekday()  # 1=Tuesday, 5=Saturday
     is_scheduled_day = today_weekday in (1, 5)
+    run_mode = os.environ.get("RUN_MODE", "daily")
+    force_send = bool(os.environ.get("FORCE_SEND"))
 
-    if not os.environ.get("FORCE_SEND") and not is_scheduled_day and not has_messages_today(messages):
-        print("No new messages today and not a scheduled send day — skipping email.")
+    # Fetch Dottavio's most recent price-list email (sent ~Thursday mornings).
+    print("Checking for Dottavio price-list email...")
+    dottavio_text, dottavio_ts = fetch_latest_dottavio_email()
+    dottavio_today = False
+    if dottavio_ts:
+        d_date = datetime.fromtimestamp(dottavio_ts / 1000, tz=et).date()
+        dottavio_today = (d_date == today_et)
+        print(f"  Dottavio email found, dated {d_date} (today={dottavio_today})")
+    else:
+        print("  No recent Dottavio email found")
+
+    # ── Decide whether to send ──
+    if force_send:
+        should_send = True
+    elif run_mode == "dottavio_watch":
+        # Thursday-morning watch: only send when a NEW Dottavio list arrived today
+        # and we haven't already sent today's spreadsheet.
+        if dottavio_today and not availability_already_sent_today(today_et):
+            should_send = True
+        else:
+            should_send = False
+            print("Dottavio watch: nothing new to send (already sent today or no new list).")
+    else:  # daily 8pm run
+        should_send = is_scheduled_day or has_messages_today(messages) or dottavio_today
+
+    if not should_send:
+        print("Not a scheduled send and nothing new today — skipping email.")
         return
 
     # item -> list of (vendor, price, unit)
@@ -909,6 +1011,20 @@ def main():
                                       seen_vendors, vendor_item_keys)
         except Exception as e:
             print(f"  Parse error: {e}")
+
+    # Merge in Dottavio's emailed price list (vendor name isn't in the body, so force it).
+    if dottavio_text:
+        print("\nParsing Dottavio price-list email...")
+        try:
+            d_result = extract_prices_from_content(
+                [{"type": "text", "text": dottavio_text}], "Dottavio", product_names
+            )
+            if d_result:
+                d_result["vendor"] = "Dottavio"
+                merge_result_into_map(d_result, item_vendor_map, item_display_name,
+                                      seen_vendors, vendor_item_keys)
+        except Exception as e:
+            print(f"  Dottavio parse error: {e}")
 
     # Merge in baseline price lists not posted to Slack (e.g. Nathel).
     # Slack was processed first, so a newer Slack post for the same vendor wins.
