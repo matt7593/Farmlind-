@@ -37,17 +37,17 @@ jobs:
         run: |
           set +e
           hour=$(date -u +%H)
-          # Evening window in UTC = 23:00–03:59 (7pm–midnight ET).
-          # During the window, loop every 3 minutes until 12:10am ET (04:10 UTC).
+          # Evening window in UTC = 23:00–05:59 (7pm–2am ET).
+          # During the window, loop every 3 minutes until 2:10am ET (06:10 UTC).
           # Outside the window, do a single quick check (safety net).
           case "$hour" in
-            23|00|01|02|03)
+            23|00|01|02|03|04|05)
               if [ "$hour" = "23" ]; then
-                end=$(date -u -d 'tomorrow 04:10' +%s)
+                end=$(date -u -d 'tomorrow 06:10' +%s)
               else
-                end=$(date -u -d 'today 04:10' +%s)
+                end=$(date -u -d 'today 06:10' +%s)
               fi
-              echo "Evening window: looping every 3 min until 04:10 UTC."
+              echo "Evening window: looping every 3 min until 06:10 UTC (2am ET)."
               while [ "$(date -u +%s)" -lt "$end" ]; do
                 python scripts/check_orders.py
                 [ "$(date -u +%s)" -lt "$end" ] && sleep 180
