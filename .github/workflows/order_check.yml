@@ -2,13 +2,21 @@ name: Matt Order Check
 
 on:
   schedule:
-    # Every 5 min, 24 hours a day — catches Matt's order whenever he sends it.
-    - cron: '*/5 * * * *'
+    # Reliable infrequent triggers (GitHub honors these far better than */5).
+    # The job itself loops every 3 min during the evening window (see run step).
+    - cron: '0 23 * * *'    # 7pm ET — start the tight evening loop
+    - cron: '0 */3 * * *'   # every 3 hours — safety net for off-window orders
   workflow_dispatch:
+
+# If a new trigger fires while a loop is already running, replace it cleanly.
+concurrency:
+  group: order-check
+  cancel-in-progress: true
 
 jobs:
   check-orders:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -26,4 +34,27 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_REFRESH_TOKEN_1: ${{ secrets.GMAIL_REFRESH_TOKEN_1 }}
           GMAIL_REFRESH_TOKEN_2: ${{ secrets.GMAIL_REFRESH_TOKEN_2 }}
-        run: python scripts/check_orders.py
+        run: |
+          set +e
+          hour=$(date -u +%H)
+          # Evening window in UTC = 23:00–03:59 (7pm–midnight ET).
+          # During the window, loop every 3 minutes until 12:10am ET (04:10 UTC).
+          # Outside the window, do a single quick check (safety net).
+          case "$hour" in
+            23|00|01|02|03)
+              if [ "$hour" = "23" ]; then
+                end=$(date -u -d 'tomorrow 04:10' +%s)
+              else
+                end=$(date -u -d 'today 04:10' +%s)
+              fi
+              echo "Evening window: looping every 3 min until 04:10 UTC."
+              while [ "$(date -u +%s)" -lt "$end" ]; do
+                python scripts/check_orders.py
+                [ "$(date -u +%s)" -lt "$end" ] && sleep 180
+              done
+              ;;
+            *)
+              echo "Off-window run: single check."
+              python scripts/check_orders.py
+              ;;
+          esac
