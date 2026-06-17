@@ -36,6 +36,14 @@ NOTIFY_EMAILS = ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 # UTC midnight boundary (which calendar-date logic does).
 SESSION_HOURS = 8
 
+# Wait this many minutes after Matt's most recent order before flagging a vendor he
+# skipped entirely — he often emails vendors in separate messages minutes apart, so
+# we don't want to cry wolf before he's had a chance to send the others.
+SKIPPED_DELAY_MIN = 45
+
+ITEMS_SUBJECT = "Order Check -"            # missing-items reminder (fires ~3 min after order)
+SKIPPED_SUBJECT = "Order Alert - Missing Vendor -"  # skipped-vendor alert (fires after 45 min)
+
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
@@ -237,14 +245,13 @@ def fetch_all_recent_orders(access_tokens, days=16, max_results=60):
     return out
 
 
-def reminder_already_sent_after(access_token, since_ms):
-    """Return True if an Order Check reminder was already sent after since_ms timestamp."""
-    from datetime import timedelta
+def reminder_already_sent_after(access_token, since_ms, subject_prefix):
+    """Return True if an email with the given subject prefix was already sent after since_ms."""
     since_dt = datetime.fromtimestamp(since_ms / 1000)
     after = since_dt.strftime("%Y/%m/%d")
     try:
         result = gmail_get(access_token, "/users/me/messages", {
-            "q": f"in:sent subject:\"Order Check -\" after:{after}",
+            "q": f"in:sent subject:\"{subject_prefix}\" after:{after}",
             "maxResults": 10
         })
         for m in result.get("messages", []):
@@ -353,13 +360,66 @@ def preview_reminder(missing_by_vendor, vendor_today, skipped_vendors, today):
     print(build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors))
 
 
-def send_reminder(access_token, sender_email, missing_by_vendor, vendor_today, today, skipped_vendors=None):
+def send_reminder(access_token, sender_email, missing_by_vendor, vendor_today, today):
     subject = f"Order Check - {today.strftime('%A %b %d')}"
-    body = build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors)
+    body = build_reminder_body(missing_by_vendor, vendor_today)
     raw = f"From: {sender_email}\r\nTo: {', '.join(NOTIFY_EMAILS)}\r\nSubject: {subject}\r\n\r\n{body}"
     encoded = base64.urlsafe_b64encode(raw.encode()).decode()
     gmail_post(access_token, "/users/me/messages/send", {"raw": encoded})
     print("Reminder sent.")
+
+
+def build_skipped_body(skipped_vendors):
+    lines = [
+        "Hi Matt,",
+        "",
+        f"Heads up - it has been more than {SKIPPED_DELAY_MIN} minutes since your last order and you "
+        "have not sent an order to the following vendor(s) yet:",
+        "",
+    ]
+    for v in skipped_vendors:
+        lines.append(f"  *** {v.upper()} ***")
+    lines += [
+        "",
+        "If you skipped them on purpose, ignore this. Otherwise you may have forgotten to email them.",
+        "",
+        "- Farmlind Order Bot",
+    ]
+    return "\n".join(lines)
+
+
+def preview_skipped(skipped_vendors, today):
+    print(f"Subject: {SKIPPED_SUBJECT} {today.strftime('%A %b %d')}")
+    print(f"To: {', '.join(NOTIFY_EMAILS)}")
+    print(build_skipped_body(skipped_vendors))
+
+
+def send_skipped_alert(access_token, sender_email, skipped_vendors, today):
+    subject = f"{SKIPPED_SUBJECT} {today.strftime('%A %b %d')}"
+    body = build_skipped_body(skipped_vendors)
+    raw = f"From: {sender_email}\r\nTo: {', '.join(NOTIFY_EMAILS)}\r\nSubject: {subject}\r\n\r\n{body}"
+    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
+    gmail_post(access_token, "/users/me/messages/send", {"raw": encoded})
+    print("Skipped-vendor alert sent.")
+
+
+STATE_FILE = ".order_state.json"
+
+
+def load_state():
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
 
 
 def main(override_date=None):
@@ -397,85 +457,35 @@ def main(override_date=None):
         anchor_ts = candidates[-1][0]
     else:
         anchor_ts = all_orders[-1][0]
-        if not os.environ.get("FORCE_SEND"):
-            order_age_minutes = (now_ms - anchor_ts) / 60000
-            if order_age_minutes < 3:
-                print(f"Most recent order sent {order_age_minutes:.1f} min ago — waiting for 3 min mark.")
-                return
-            sender_token = access_tokens[0][1]
-            if reminder_already_sent_after(sender_token, anchor_ts):
-                print("Reminder already sent for this order — nothing to do.")
-                return
+
+    anchor_age_min = (now_ms - anchor_ts) / 60000
+    sender_email, sender_token = access_tokens[0]
+    force = bool(override_date) or bool(os.environ.get("FORCE_SEND"))
+    dry = bool(os.environ.get("DRY_RUN"))
+
+    # Give follow-up parts a moment to arrive before reporting anything.
+    if not force and anchor_age_min < 3:
+        print(f"Most recent order sent {anchor_age_min:.1f} min ago — waiting for 3 min mark.")
+        return
 
     session_start = anchor_ts - session_ms
     session_end = anchor_ts + session_ms
     current_msgs = [o for o in all_orders if session_start <= o[0] <= session_end]
     prior_msgs = [o for o in all_orders if o[0] < session_start]
     print(f"Session anchored at {datetime.fromtimestamp(anchor_ts/1000)}; "
-          f"{len(current_msgs)} order email(s) in session, {len(prior_msgs)} prior.")
+          f"{len(current_msgs)} order email(s) in session, {len(prior_msgs)} prior. "
+          f"Order is {anchor_age_min:.0f} min old.")
 
-    vendor_today = {}
-    vendor_previous = {}
-
-    for vendor_name, keywords in VENDORS.items():
-        print(f"\nChecking {vendor_name}...")
-        today_items = collect_vendor_items(current_msgs, keywords)
-
-        prev_items = []
-        if today_items:
-            # Find the most recent prior order email containing this vendor, then group
-            # its multi-part follow-ups into a single previous session.
-            prev_anchor_ts = None
-            for ts, token, msg in reversed(prior_msgs):
-                body = extract_text_from_part(msg.get("payload", {}))
-                if extract_vendor_section(body, keywords).strip():
-                    prev_anchor_ts = ts
-                    break
-            if prev_anchor_ts is not None:
-                p_start = prev_anchor_ts - session_ms
-                p_end = prev_anchor_ts + session_ms
-                prev_session = [o for o in prior_msgs if p_start <= o[0] <= p_end]
-                prev_items = collect_vendor_items(prev_session, keywords)
-                print(f"  Previous order: {datetime.fromtimestamp(prev_anchor_ts/1000).date()}")
-
-        vendor_today[vendor_name] = today_items
-        vendor_previous[vendor_name] = prev_items
-        print(f"  Today: {len(today_items)} items, Previous: {len(prev_items)} items")
-
-    ordered_today = any(items for items in vendor_today.values())
-    if not ordered_today:
-        print("\nNo orders in this session — nothing to compare.")
-        return
-
-    missing_by_vendor = {}
-    for vendor_name in VENDORS:
-        current_items = vendor_today[vendor_name]
-        prev_items = vendor_previous[vendor_name]
-        if not current_items or not prev_items:
-            continue
-        try:
-            today_names = normalize_items(current_items)
-            prev_names = normalize_items(prev_items)
-
-            missing = []
-            seen = set()
-            for name in prev_names:
-                if name in seen:
-                    continue
-                seen.add(name)
-                found = any(item_matches(name, today_name) for today_name in today_names)
-                if not found:
-                    missing.append(name)
-
-            if missing:
-                missing_by_vendor[vendor_name] = missing
-        except Exception as e:
-            print(f"  Comparison error for {vendor_name}: {e}")
-
-    # Check for vendors Matt has ordered from before but skipped entirely this session
+    # --- Cheap detection (no Claude): which vendors were ordered, which were skipped ---
+    vendor_has_today = {}
     skipped_vendors = []
     for vendor_name, keywords in VENDORS.items():
-        if not vendor_today[vendor_name]:
+        has_today = any(
+            extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
+            for ts, token, msg in current_msgs
+        )
+        vendor_has_today[vendor_name] = has_today
+        if not has_today:
             ordered_before = any(
                 extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
                 for ts, token, msg in prior_msgs
@@ -483,20 +493,99 @@ def main(override_date=None):
             if ordered_before:
                 skipped_vendors.append(vendor_name)
 
-    if not missing_by_vendor and not skipped_vendors:
-        print("\nAll previous items accounted for. No reminder needed.")
+    if not any(vendor_has_today.values()):
+        print("\nNo orders in this session — nothing to compare.")
         return
 
-    sender_email, sender_token = access_tokens[0]
-    print(f"\nMissing items: {missing_by_vendor}")
-    print(f"Skipped vendors: {skipped_vendors}")
+    # --- Work out what still needs to be sent (independent timing per notification) ---
+    state = load_state()
+    key = str(anchor_ts)
+    st = state.get(key, {})
 
-    if os.environ.get("DRY_RUN"):
-        print("\n--- DRY RUN: email NOT sent. Preview below ---")
-        preview_reminder(missing_by_vendor, vendor_today, skipped_vendors, today)
+    items_sent = bool(st.get("items") or st.get("clear"))
+    if not force and not items_sent:
+        items_sent = reminder_already_sent_after(sender_token, anchor_ts, ITEMS_SUBJECT)
+    skip_sent = bool(st.get("skip"))
+    if not force and not skip_sent:
+        skip_sent = reminder_already_sent_after(sender_token, anchor_ts, SKIPPED_SUBJECT)
+
+    skip_due = force or anchor_age_min >= SKIPPED_DELAY_MIN
+    need_items = force or not items_sent
+    need_skip = bool(skipped_vendors) and skip_due and (force or not skip_sent)
+
+    if not need_items and not need_skip:
+        print("Nothing new to report (items reminder sent; skip alert not due or already sent).")
         return
 
-    send_reminder(sender_token, sender_email, missing_by_vendor, vendor_today, today, skipped_vendors)
+    # --- Missing-items reminder (~3 min after order). Claude only runs when needed. ---
+    if need_items:
+        vendor_today = {}
+        missing_by_vendor = {}
+        for vendor_name, keywords in VENDORS.items():
+            if not vendor_has_today[vendor_name]:
+                vendor_today[vendor_name] = []
+                continue
+            print(f"\nChecking {vendor_name}...")
+            today_items = collect_vendor_items(current_msgs, keywords)
+            vendor_today[vendor_name] = today_items
+
+            prev_items = []
+            prev_anchor_ts = None
+            for ts, token, msg in reversed(prior_msgs):
+                if extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip():
+                    prev_anchor_ts = ts
+                    break
+            if prev_anchor_ts is not None:
+                p_start = prev_anchor_ts - session_ms
+                p_end = prev_anchor_ts + session_ms
+                prev_session = [o for o in prior_msgs if p_start <= o[0] <= p_end]
+                prev_items = collect_vendor_items(prev_session, keywords)
+            print(f"  Today: {len(today_items)} items, Previous: {len(prev_items)} items")
+
+            if today_items and prev_items:
+                try:
+                    today_names = normalize_items(today_items)
+                    prev_names = normalize_items(prev_items)
+                    missing, seen = [], set()
+                    for name in prev_names:
+                        if name in seen:
+                            continue
+                        seen.add(name)
+                        if not any(item_matches(name, tn) for tn in today_names):
+                            missing.append(name)
+                    if missing:
+                        missing_by_vendor[vendor_name] = missing
+                except Exception as e:
+                    print(f"  Comparison error for {vendor_name}: {e}")
+
+        print(f"\nMissing items: {missing_by_vendor}")
+        if missing_by_vendor:
+            if dry:
+                print("\n--- DRY RUN: items email NOT sent. Preview ---")
+                preview_reminder(missing_by_vendor, vendor_today, None, today)
+            else:
+                send_reminder(sender_token, sender_email, missing_by_vendor, vendor_today, today)
+            st["items"] = True
+        else:
+            print("No missing items for vendors that were ordered.")
+            st["clear"] = True
+
+    # --- Skipped-vendor alert: only after the 45-minute grace period ---
+    if need_skip:
+        print(f"\nSkipped vendors (order is {anchor_age_min:.0f} min old): {skipped_vendors}")
+        if dry:
+            print("\n--- DRY RUN: skipped-vendor alert NOT sent. Preview ---")
+            preview_skipped(skipped_vendors, today)
+        else:
+            send_skipped_alert(sender_token, sender_email, skipped_vendors, today)
+        st["skip"] = True
+    elif skipped_vendors:
+        print(f"\n{len(skipped_vendors)} vendor(s) not ordered yet ({', '.join(skipped_vendors)}), "
+              f"but order is only {anchor_age_min:.0f} min old — holding skip alert until {SKIPPED_DELAY_MIN} min.")
+
+    if not dry:
+        state[key] = st
+        save_state(state)
 
 
 if __name__ == "__main__":
