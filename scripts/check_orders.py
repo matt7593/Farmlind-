@@ -222,6 +222,25 @@ def get_items_from_message(access_token, message_id, payload, vendor_keywords):
 
 ORDER_RECIPIENTS = "to:orders@goodnessgardens.com OR to:Office@dagelebrothersproduce.com OR to:anthony@mdottavioproduce.com"
 
+VENDOR_EMAILS = {
+    "Goodness Gardens": "orders@goodnessgardens.com",
+    "Dagele Brothers":  "office@dagelebrothersproduce.com",
+    "Dottavio":         "anthony@mdottavioproduce.com",
+}
+
+
+def msg_sent_to_vendor(msg, vendor_name):
+    """Return True if the message's To header matches this vendor's email address."""
+    vendor_addr = VENDOR_EMAILS.get(vendor_name, "").lower()
+    if not vendor_addr:
+        return False
+    headers = msg.get("payload", {}).get("headers", [])
+    for h in headers:
+        if h.get("name", "").lower() == "to":
+            if vendor_addr in h.get("value", "").lower():
+                return True
+    return False
+
 
 def fetch_all_recent_orders(access_tokens, days=16, max_results=60):
     """Return [(ts_ms, access_token, full_message)] for every order email sent in the
@@ -453,12 +472,14 @@ def main(override_date=None):
     for vendor_name, keywords in VENDORS.items():
         has_today = any(
             extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
+            or msg_sent_to_vendor(msg, vendor_name)
             for ts, token, msg in current_msgs
         )
         vendor_has_today[vendor_name] = has_today
         if not has_today:
             ordered_before = any(
                 extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
+                or msg_sent_to_vendor(msg, vendor_name)
                 for ts, token, msg in prior_msgs
             )
             if ordered_before:
@@ -495,7 +516,8 @@ def main(override_date=None):
         prev_items = []
         prev_anchor_ts = None
         for ts, token, msg in reversed(prior_msgs):
-            if extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip():
+            if (extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
+                    or msg_sent_to_vendor(msg, vendor_name)):
                 prev_anchor_ts = ts
                 break
         if prev_anchor_ts is not None:
