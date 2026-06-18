@@ -7,6 +7,15 @@ on:
     - cron: '0 23 * * *'    # 7pm ET — start the tight evening loop
     - cron: '0 */3 * * *'   # every 3 hours — safety net for off-window orders
   workflow_dispatch:
+    inputs:
+      force_send:
+        description: 'Force send the reminder email even if already sent or outside delay window'
+        required: false
+        default: 'false'
+      dry_run:
+        description: 'Print the email preview without actually sending it'
+        required: false
+        default: 'false'
 
 # If a new trigger fires while a loop is already running, replace it cleanly.
 concurrency:
@@ -34,10 +43,18 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_REFRESH_TOKEN_1: ${{ secrets.GMAIL_REFRESH_TOKEN_1 }}
           GMAIL_REFRESH_TOKEN_2: ${{ secrets.GMAIL_REFRESH_TOKEN_2 }}
+          FORCE_SEND: ${{ github.event.inputs.force_send }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
           set +e
+          # If manually triggered with force_send, just run once immediately.
+          if [ "$FORCE_SEND" = "true" ] || [ "$DRY_RUN" = "true" ]; then
+            echo "Manual trigger: single check with FORCE_SEND=$FORCE_SEND DRY_RUN=$DRY_RUN"
+            python scripts/check_orders.py
+            exit 0
+          fi
           hour=$(date -u +%H)
-          # Evening window in UTC = 23:00–05:59 (7pm–2am ET).
+          # Evening window in UTC = 23:00-05:59 (7pm-2am ET).
           # During the window, loop every 3 minutes until 2:10am ET (06:10 UTC).
           # Outside the window, do a single quick check (safety net).
           case "$hour" in
