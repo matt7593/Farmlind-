@@ -45,6 +45,10 @@ REMINDER_SUBJECT = "Order Check -"  # single combined email: missing items + ski
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
+def env_is_true(name):
+    return os.environ.get(name, "").lower() == "true"
+
+
 def get_access_token(refresh_token):
     data = urllib.parse.urlencode({
         "client_id": CLIENT_ID,
@@ -449,8 +453,8 @@ def main(override_date=None):
 
     anchor_age_min = (now_ms - anchor_ts) / 60000
     sender_email, sender_token = access_tokens[0]
-    force = bool(override_date) or bool(os.environ.get("FORCE_SEND"))
-    dry = bool(os.environ.get("DRY_RUN"))
+    force = bool(override_date) or env_is_true("FORCE_SEND")
+    dry = env_is_true("DRY_RUN")
 
     # Wait 30 min after the most recent order so Matt has time to email all vendors
     # before we report anything (he often sends them a few minutes apart).
