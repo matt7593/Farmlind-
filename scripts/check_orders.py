@@ -45,6 +45,10 @@ REMINDER_SUBJECT = "Order Check -"  # single combined email: missing items + ski
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
+def env_is_true(name):
+    return os.environ.get(name, "").lower() == "true"
+
+
 def get_access_token(refresh_token):
     data = urllib.parse.urlencode({
         "client_id": CLIENT_ID,
@@ -221,6 +225,25 @@ def get_items_from_message(access_token, message_id, payload, vendor_keywords):
 
 
 ORDER_RECIPIENTS = "to:orders@goodnessgardens.com OR to:Office@dagelebrothersproduce.com OR to:anthony@mdottavioproduce.com"
+
+VENDOR_EMAILS = {
+    "Goodness Gardens": "orders@goodnessgardens.com",
+    "Dagele Brothers":  "office@dagelebrothersproduce.com",
+    "Dottavio":         "anthony@mdottavioproduce.com",
+}
+
+
+def msg_sent_to_vendor(msg, vendor_name):
+    """Return True if the message's To header matches this vendor's email address."""
+    vendor_addr = VENDOR_EMAILS.get(vendor_name, "").lower()
+    if not vendor_addr:
+        return False
+    headers = msg.get("payload", {}).get("headers", [])
+    for h in headers:
+        if h.get("name", "").lower() == "to":
+            if vendor_addr in h.get("value", "").lower():
+                return True
+    return False
 
 
 def fetch_all_recent_orders(access_tokens, days=16, max_results=60):
@@ -430,8 +453,8 @@ def main(override_date=None):
 
     anchor_age_min = (now_ms - anchor_ts) / 60000
     sender_email, sender_token = access_tokens[0]
-    force = bool(override_date) or bool(os.environ.get("FORCE_SEND"))
-    dry = bool(os.environ.get("DRY_RUN"))
+    force = bool(override_date) or env_is_true("FORCE_SEND")
+    dry = env_is_true("DRY_RUN")
 
     # Wait 30 min after the most recent order so Matt has time to email all vendors
     # before we report anything (he often sends them a few minutes apart).
@@ -453,12 +476,14 @@ def main(override_date=None):
     for vendor_name, keywords in VENDORS.items():
         has_today = any(
             extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
+            or msg_sent_to_vendor(msg, vendor_name)
             for ts, token, msg in current_msgs
         )
         vendor_has_today[vendor_name] = has_today
         if not has_today:
             ordered_before = any(
                 extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
+                or msg_sent_to_vendor(msg, vendor_name)
                 for ts, token, msg in prior_msgs
             )
             if ordered_before:
@@ -495,7 +520,8 @@ def main(override_date=None):
         prev_items = []
         prev_anchor_ts = None
         for ts, token, msg in reversed(prior_msgs):
-            if extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip():
+            if (extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
+                    or msg_sent_to_vendor(msg, vendor_name)):
                 prev_anchor_ts = ts
                 break
         if prev_anchor_ts is not None:
