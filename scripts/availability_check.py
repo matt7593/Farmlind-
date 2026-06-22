@@ -532,43 +532,52 @@ THIN_BORDER = Border(
 )
 
 
+def normalize_unit(unit):
+    """Normalize unit strings so near-duplicates collapse (e.g. '6 ct' → '6ct')."""
+    if not unit:
+        return ""
+    u = unit.strip().lower()
+    u = re.sub(r"\s+", "", u)          # remove all spaces: "6 ct" → "6ct"
+    u = re.sub(r"s$", "", u)           # strip trailing s: "lbs" → "lb", "bags" → "bag"
+    return u
+
+
 def build_spreadsheet(item_vendor_map):
-    """Matrix layout: vendors across the top (columns), items down the side (rows).
-    Each vendor gets TWO columns: a numeric price (currency-formatted, so formulas work)
-    and a unit/count column to its right. The unit is also kept as a hover note."""
-    from openpyxl.comments import Comment
+    """Matrix layout: vendors across top, items down side.
+    Each cell shows deduplicated price/unit combos for that vendor, one per line,
+    sorted cheapest first — e.g.:
+        $2.00 / 6ct
+        $3.50 / 12ct
+    Green = cheapest vendor, Red = most expensive, Yellow = middle."""
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Price Comparison"
 
-    # ── Collect the full vendor list (columns) ──
+    # Alternating row fills for readability
+    ROW_FILL_ODD  = PatternFill("solid", fgColor="FFFFFF")
+    ROW_FILL_EVEN = PatternFill("solid", fgColor="F2F2F2")
+
+    # Collect vendors, sort alphabetically with Specials at end
     all_vendors = set()
     for entries in item_vendor_map.values():
         for vendor, _price, _unit in entries:
             all_vendors.add(vendor)
-    # Sort alphabetically, but push the "Specials" vendors to the end
     def vendor_sort_key(v):
         return (1 if "specials" in v.lower() else 0, v.lower())
     vendors = sorted(all_vendors, key=vendor_sort_key)
 
-    # ── Header row ──
-    # Col 1 = Item, Col 2 = Cheapest, Col 3 = Price Range, then per vendor a
-    # price column followed by a unit column.
+    # Header row: Item | Cheapest | Price Range | Vendor1 | Vendor2 | ...
     ws.cell(row=1, column=1, value="Item")
-    ws.cell(row=1, column=2, value="Cheapest")
+    ws.cell(row=1, column=2, value="Cheapest Vendor")
     ws.cell(row=1, column=3, value="Price Range")
-    vendor_price_col = {}
-    vendor_unit_col = {}
-    col = 4
-    for vendor in vendors:
-        vendor_price_col[vendor] = col
-        vendor_unit_col[vendor] = col + 1
+    vendor_col = {}
+    for idx, vendor in enumerate(vendors):
+        col = 4 + idx
+        vendor_col[vendor] = col
         ws.cell(row=1, column=col, value=vendor)
-        ws.cell(row=1, column=col + 1, value=f"{vendor} Unit")
-        col += 2
-    last_col = col - 1
 
+    last_col = 3 + len(vendors)
     for c in range(1, last_col + 1):
         cell = ws.cell(row=1, column=c)
         cell.fill = HEADER_FILL
@@ -576,83 +585,102 @@ def build_spreadsheet(item_vendor_map):
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = THIN_BORDER
 
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 22
-    ws.column_dimensions["C"].width = 16
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["C"].width = 18
     for vendor in vendors:
-        ws.column_dimensions[openpyxl.utils.get_column_letter(vendor_price_col[vendor])].width = 11
-        ws.column_dimensions[openpyxl.utils.get_column_letter(vendor_unit_col[vendor])].width = 12
+        ws.column_dimensions[openpyxl.utils.get_column_letter(vendor_col[vendor])].width = 16
 
-    ws.row_dimensions[1].height = 30
-    ws.freeze_panes = "D2"  # lock item name + cheapest + range columns and the header row
+    ws.row_dimensions[1].height = 36
+    ws.freeze_panes = "D2"
 
-    # ── Item rows ──
+    # Item rows
     row_idx = 2
     for item in sorted(item_vendor_map.keys()):
         entries = item_vendor_map[item]
 
-        # Collapse to one (price, unit) per vendor — keep the cheapest if a vendor
-        # listed the same item at multiple sizes; remember all sizes for the note.
-        per_vendor = {}  # vendor -> {"price": float, "unit": str, "all": [(price, unit)]}
+        # Group by vendor, deduplicating by (price, normalized_unit)
+        per_vendor = {}
         for vendor, price, unit in entries:
-            slot = per_vendor.setdefault(vendor, {"price": price, "unit": unit, "all": []})
-            slot["all"].append((price, unit))
-            if price < slot["price"]:
-                slot["price"] = price
-                slot["unit"] = unit
+            norm_u = normalize_unit(unit)
+            if vendor not in per_vendor:
+                per_vendor[vendor] = {}
+            key = (round(price, 4), norm_u)
+            # Keep the original unit string from the first time we see this combo
+            if key not in per_vendor[vendor]:
+                per_vendor[vendor][key] = (price, unit.strip() if unit else "")
 
-        prices = [v["price"] for v in per_vendor.values()]
-        low, high = min(prices), max(prices)
-        cheapest_vendor = min(per_vendor.items(), key=lambda kv: kv[1]["price"])[0]
-        price_range = f"${low:.2f} - ${high:.2f}" if low != high else f"${low:.2f}"
+        # Find global min/max prices for coloring
+        all_prices = [price for slots in per_vendor.values() for price, _ in slots.values()]
+        low, high = min(all_prices), max(all_prices)
 
-        # Item name + cheapest + range
+        # Cheapest vendor = one whose lowest price == global low
+        cheapest_vendor = min(
+            per_vendor.items(),
+            key=lambda kv: min(p for p, _ in kv[1].values())
+        )[0]
+        price_range = f"${low:.2f} — ${high:.2f}" if low != high else f"${low:.2f}"
+
+        # Alternating row background
+        row_bg = ROW_FILL_ODD if (row_idx % 2 == 0) else ROW_FILL_EVEN
+
+        # Item name cell
         item_cell = ws.cell(row=row_idx, column=1, value=item)
-        item_cell.font = Font(bold=True)
+        item_cell.font = Font(bold=True, size=11)
         item_cell.alignment = Alignment(horizontal="left", vertical="center")
         item_cell.border = THIN_BORDER
-        for c, val in ((2, cheapest_vendor), (3, price_range)):
-            cc = ws.cell(row=row_idx, column=c, value=val)
-            cc.alignment = Alignment(horizontal="center", vertical="center")
-            cc.border = THIN_BORDER
+        item_cell.fill = row_bg
 
-        # Price + unit per vendor
+        # Cheapest vendor cell
+        cheap_cell = ws.cell(row=row_idx, column=2, value=cheapest_vendor)
+        cheap_cell.alignment = Alignment(horizontal="center", vertical="center")
+        cheap_cell.border = THIN_BORDER
+        cheap_cell.font = Font(bold=True, color="1F6B23")
+        cheap_cell.fill = row_bg
+
+        # Price range cell
+        range_cell = ws.cell(row=row_idx, column=3, value=price_range)
+        range_cell.alignment = Alignment(horizontal="center", vertical="center")
+        range_cell.border = THIN_BORDER
+        range_cell.fill = row_bg
+
+        # Vendor columns
         for vendor in vendors:
-            pcol = vendor_price_col[vendor]
-            ucol = vendor_unit_col[vendor]
-            pcell = ws.cell(row=row_idx, column=pcol)
-            ucell = ws.cell(row=row_idx, column=ucol)
-            pcell.border = THIN_BORDER
-            ucell.border = THIN_BORDER
-            pcell.alignment = Alignment(horizontal="center", vertical="center")
-            ucell.alignment = Alignment(horizontal="center", vertical="center")
+            col = vendor_col[vendor]
+            cell = ws.cell(row=row_idx, column=col)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
             slot = per_vendor.get(vendor)
             if not slot:
-                continue  # vendor doesn't carry this item — leave both cells blank
+                cell.fill = row_bg
+                continue
 
-            price = slot["price"]
-            pcell.value = price
-            pcell.number_format = '"$"#,##0.00'
-            ucell.value = slot["unit"] or ""
+            # Sort deduplicated variants cheapest first, build display lines
+            sorted_variants = sorted(slot.values(), key=lambda x: x[0])
+            display_parts = []
+            for price, unit in sorted_variants:
+                if unit:
+                    display_parts.append(f"${price:.2f} / {unit}")
+                else:
+                    display_parts.append(f"${price:.2f}")
+            cell.value = "\n".join(display_parts)
+            cell.font = Font(size=11)
 
-            # Color: green = cheapest, red = most expensive, yellow = middle
-            if price == low:
-                fill = GREEN_FILL
-            elif price == high and low != high:
-                fill = RED_FILL
+            # Color by whether this vendor's cheapest price is the global low/high
+            vendor_min = min(p for p, _ in slot.values())
+            if vendor_min == low:
+                cell.fill = GREEN_FILL
+            elif vendor_min == high and low != high:
+                cell.fill = RED_FILL
             else:
-                fill = YELLOW_FILL
-            pcell.fill = fill
-            ucell.fill = fill
+                cell.fill = YELLOW_FILL
 
-            # Attach size/unit info as a cell note (lists all sizes if more than one)
-            note_lines = []
-            for p, u in sorted(slot["all"]):
-                note_lines.append(f"${p:.2f} — {u}" if u else f"${p:.2f}")
-            note_text = "\n".join(note_lines)
-            if note_text:
-                pcell.comment = Comment(note_text, "Farmlind Bot")
+        # Auto-size row height based on max lines in any vendor cell for this row
+        max_lines = max(
+            len(list(per_vendor.get(v, {}).values())) for v in vendors
+        ) if vendors else 1
+        ws.row_dimensions[row_idx].height = max(18, max_lines * 18)
 
         row_idx += 1
 
@@ -672,196 +700,25 @@ import string
 SPECIALS_VENDORS = {f"{day} Specials" for day in
                     ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")}
 
-ITEM_ALIASES = {
-    # Plurals → singular
-    "strawberries": "Strawberry",
-    "peaches": "Peach",
-    "avocados": "Avocado",
-    "mangoes": "Mango",
-    "mangos": "Mango",
-    "pineapples": "Pineapple",
-    "lemons": "Lemon",
-    "limes": "Lime",
-    "oranges": "Orange",
-    "grapes": "Grape",
-    "cherries": "Cherry",
-    "blueberries": "Blueberry",
-    "raspberries": "Raspberry",
-    "blackberries": "Blackberry",
-    "plums": "Plum",
-    "nectarines": "Nectarine",
-    "apricots": "Apricot",
-    "tomatoes": "Tomato",
-    "peppers": "Pepper",
-    "onions": "Onion",
-    "potatoes": "Potato",
-    "cucumbers": "Cucumber",
-    "zucchinis": "Zucchini",
-    "watermelons": "Watermelon",
-    "cantaloupes": "Cantaloupe",
-    "honeydews": "Honeydew",
-    "pears": "Pear",
-    "apples": "Apple",
-    "bananas": "Banana",
-    "grapefruits": "Grapefruit",
-    "tangerines": "Tangerine",
-    "clementines": "Clementine",
-    "pomegranates": "Pomegranate",
-    "figs": "Fig",
-    "dates": "Date",
-    "kiwis": "Kiwi",
-    "papayas": "Papaya",
-    "guavas": "Guava",
-    "lychees": "Lychee",
-    "persimmons": "Persimmon",
-    "quinces": "Quince",
-    "kumquats": "Kumquat",
-    "artichokes": "Artichoke",
-    "asparagus tips": "Asparagus",
-    "broccolis": "Broccoli",
-    "cabbages": "Cabbage",
-    "carrots": "Carrot",
-    "cauliflowers": "Cauliflower",
-    "celeries": "Celery",
-    "corns": "Corn",
-    "eggplants": "Eggplant",
-    "garlic bulbs": "Garlic",
-    "lettuces": "Lettuce",
-    "mushrooms": "Mushroom",
-    "parsnips": "Parsnip",
-    "radishes": "Radish",
-    "spinaches": "Spinach",
-    "squashes": "Squash",
-    "turnips": "Turnip",
-    "beets": "Beet",
-    "leeks": "Leek",
-    "shallots": "Shallot",
-    "scallions": "Scallion",
-    "chives": "Chive",
+def load_item_aliases():
+  """Load item aliases from external JSON file."""
+  aliases_file = os.path.join(os.path.dirname(__file__), "item_aliases.json")
+  if not os.path.exists(aliases_file):
+    print("Warning: item_aliases.json not found — using empty aliases")
+    return {}
+  try:
+    with open(aliases_file, 'r') as f:
+      data = json.load(f)
+    flat = {}
+    for category in data.values():
+      if isinstance(category, dict):
+        flat.update(category)
+    return flat
+  except Exception as e:
+    print(f"Warning: could not load item_aliases.json: {e}")
+    return {}
 
-    # Fuji Apple variants
-    "fuji": "Fuji Apple",
-    "fuji apple": "Fuji Apple",
-    "fuji apples": "Fuji Apple",
-    "apple fuji": "Fuji Apple",
-    "apples fuji": "Fuji Apple",
-    "apples, fuji": "Fuji Apple",
-    "apple, fuji": "Fuji Apple",
-
-    # Granny Smith variants
-    "granny": "Granny Smith Apple",
-    "granny smith": "Granny Smith Apple",
-    "granny smith apple": "Granny Smith Apple",
-    "granny smith apples": "Granny Smith Apple",
-    "apple granny smith": "Granny Smith Apple",
-    "apples granny smith": "Granny Smith Apple",
-    "apples, granny smith": "Granny Smith Apple",
-
-    # Gala Apple variants
-    "gala": "Gala Apple",
-    "gala apple": "Gala Apple",
-    "gala apples": "Gala Apple",
-    "apple gala": "Gala Apple",
-    "apples gala": "Gala Apple",
-    "apples, gala": "Gala Apple",
-
-    # Honeycrisp Apple variants
-    "honeycrisp": "Honeycrisp Apple",
-    "honeycrisp apple": "Honeycrisp Apple",
-    "honeycrisp apples": "Honeycrisp Apple",
-    "apple honeycrisp": "Honeycrisp Apple",
-    "apples honeycrisp": "Honeycrisp Apple",
-
-    # Hass Avocado variants
-    "hass": "Hass Avocado",
-    "hass avocado": "Hass Avocado",
-    "hass avocados": "Hass Avocado",
-    "avocado hass": "Hass Avocado",
-    "avocados hass": "Hass Avocado",
-
-    # Navel Orange variants
-    "navel": "Navel Orange",
-    "navel orange": "Navel Orange",
-    "navel oranges": "Navel Orange",
-    "orange navel": "Navel Orange",
-    "oranges navel": "Navel Orange",
-    "oranges, navel": "Navel Orange",
-
-    # Bartlett Pear variants
-    "bartlett": "Bartlett Pear",
-    "bartlett pear": "Bartlett Pear",
-    "bartlett pears": "Bartlett Pear",
-    "pear bartlett": "Bartlett Pear",
-    "pears bartlett": "Bartlett Pear",
-    "pears, bartlett": "Bartlett Pear",
-
-    # Roma Tomato variants
-    "roma": "Roma Tomato",
-    "roma tomato": "Roma Tomato",
-    "roma tomatoes": "Roma Tomato",
-    "tomato roma": "Roma Tomato",
-    "tomatoes roma": "Roma Tomato",
-
-    # Bell Pepper variants
-    "bell pepper": "Bell Pepper",
-    "bell peppers": "Bell Pepper",
-    "pepper bell": "Bell Pepper",
-    "peppers bell": "Bell Pepper",
-    "green pepper": "Green Bell Pepper",
-    "green peppers": "Green Bell Pepper",
-    "red pepper": "Red Bell Pepper",
-    "red peppers": "Red Bell Pepper",
-    "yellow pepper": "Yellow Bell Pepper",
-    "yellow peppers": "Yellow Bell Pepper",
-
-    # Sweet Globe Onion
-    "sweet globe onion": "Sweet Globe Onion",
-    "onions, sweet globe": "Sweet Globe Onion",
-    "sweet onion": "Sweet Onion",
-    "sweet onions": "Sweet Onion",
-
-    # Yellow Onion variants
-    "yellow onion": "Yellow Onion",
-    "yellow onions": "Yellow Onion",
-    "onion yellow": "Yellow Onion",
-
-    # Red Onion variants
-    "red onion": "Red Onion",
-    "red onions": "Red Onion",
-
-    # Russet Potato variants
-    "russet": "Russet Potato",
-    "russet potato": "Russet Potato",
-    "russet potatoes": "Russet Potato",
-    "potato russet": "Russet Potato",
-
-    # Green/Red Grape variants
-    "green grape": "Green Grape",
-    "green grapes": "Green Grape",
-    "red grape": "Red Grape",
-    "red grapes": "Red Grape",
-    "black grape": "Black Grape",
-    "black grapes": "Black Grape",
-
-    # Misc common shorthand
-    "cukes": "Cucumber",
-    "zukes": "Zucchini",
-    "zucchini squash": "Zucchini",
-    "yellow squash": "Yellow Squash",
-    "butternut": "Butternut Squash",
-    "butternut squash": "Butternut Squash",
-    "iceberg": "Iceberg Lettuce",
-    "iceberg lettuce": "Iceberg Lettuce",
-    "romaine": "Romaine Lettuce",
-    "romaine lettuce": "Romaine Lettuce",
-    "baby spinach": "Baby Spinach",
-    "grape tomato": "Grape Tomato",
-    "grape tomatoes": "Grape Tomato",
-    "cherry tomato": "Cherry Tomato",
-    "cherry tomatoes": "Cherry Tomato",
-    "beefsteak tomato": "Beefsteak Tomato",
-    "beefsteak tomatoes": "Beefsteak Tomato",
-}
+ITEM_ALIASES = load_item_aliases()
 
 def normalize_item_name(name):
     """Normalize item names so minor variations map to the same key."""
