@@ -1,0 +1,41 @@
+name: Order Tracking Monitor
+
+on:
+  schedule:
+    # 8pm EST (1am UTC next day)
+    - cron: '0 1 * * *'
+    # 9pm EST (2am UTC next day)
+    - cron: '0 2 * * *'
+    # 10pm EST (3am UTC next day)
+    - cron: '0 3 * * *'
+    # 11pm EST (4am UTC next day)
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode — send only to babbe331@gmail.com'
+        required: false
+        default: 'false'
+
+jobs:
+  check-orders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic slack-sdk
+
+      - name: Run order tracking
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN_1: ${{ secrets.GMAIL_REFRESH_TOKEN_1 }}
+          TEST_MODE: ${{ github.event.inputs.test_mode }}
+        run: python scripts/order_tracking.py
