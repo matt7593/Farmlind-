@@ -102,20 +102,18 @@ def send_email(subject, body_text):
 
 def extract_vendor_name_from_message(message_text):
     """
-    Use Claude to extract vendor name from first line of message.
-    Expected format: vendor name on first line, products below.
+    Use Claude to extract vendor name from message.
+    Handles both "Vendor Name" at top and "add to Vendor Name" style messages.
     """
     if not message_text or len(message_text.strip()) < 2:
         return None
-
-    first_line = message_text.split('\n')[0].strip()
 
     response = claude.messages.create(
         model="claude-opus-4-8",
         max_tokens=50,
         messages=[{
             "role": "user",
-            "content": f'Extract just the vendor name from this first line. Return ONLY the vendor name, nothing else:\n\n"{first_line}"'
+            "content": f'Extract the vendor name from this message. It could be at the top or mentioned as "add to [vendor]". Return ONLY the vendor name, nothing else:\n\n"{message_text}"'
         }]
     )
 
@@ -163,6 +161,13 @@ def get_message_reactions(channel_id, message_ts):
         if e.response["error"] != "message_not_found":
             print(f"  Slack error checking reactions: {e}")
         return False
+
+
+def get_slack_message_link(channel_id, message_ts):
+    """Generate Slack message permalink from channel ID and timestamp."""
+    # Convert timestamp "1234567890.123456" to "p1234567890123456"
+    ts_clean = message_ts.replace(".", "")
+    return f"https://farmlindproduce.slack.com/archives/{channel_id}/p{ts_clean}"
 
 
 def fetch_channel_messages(channel_id, hours=24):
@@ -214,11 +219,13 @@ def check_orders():
 
             if vendor:
                 has_reaction = get_message_reactions(channel_id, msg["ts"])
+                message_link = get_slack_message_link(channel_id, msg["ts"])
                 orders_today[vendor]["has_reaction"] = has_reaction
                 orders_today[vendor]["messages"].append({
                     "channel": channel_id,
                     "ts": msg["ts"],
-                    "text": msg.get("text", "")[:100]
+                    "text": msg.get("text", "")[:100],
+                    "link": message_link
                 })
 
                 # Update last order date for this vendor
@@ -245,6 +252,8 @@ def check_orders():
     if unprocessed_today:
         for v in sorted(unprocessed_today):
             body += f"  • {v}\n"
+            for msg in orders_today[v]["messages"]:
+                body += f"    {msg['link']}\n"
     else:
         body += "  None — all orders marked!\n"
 
