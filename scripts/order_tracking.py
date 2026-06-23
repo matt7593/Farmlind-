@@ -16,7 +16,7 @@ GMAIL_CLIENT_ID = os.environ["GMAIL_CLIENT_ID"]
 GMAIL_CLIENT_SECRET = os.environ["GMAIL_CLIENT_SECRET"]
 GMAIL_REFRESH_TOKEN = os.environ["GMAIL_REFRESH_TOKEN_1"]
 
-ALL_EMAILS = ["matt@farmlindproduce.com", "babbe331@gmail.com"]
+ALL_EMAILS = ["babbe331@gmail.com", "matt@farmlindproduce.com", "mike@farmlindproduce.com"]
 TEST_EMAILS = ["babbe331@gmail.com"]
 NOTIFY_EMAILS = TEST_EMAILS if os.environ.get("TEST_MODE") == "true" else ALL_EMAILS
 
