@@ -156,11 +156,21 @@ def get_message_reactions(channel_id, message_ts):
     """Check if message has any emoji reactions."""
     try:
         response = slack_client.reactions_get(channel=channel_id, timestamp=message_ts)
-        return len(response.get("message", {}).get("reactions", [])) > 0
+        reactions = response.get("message", {}).get("reactions", [])
+        has_reactions = len(reactions) > 0
+        if not has_reactions:
+            print(f"    DEBUG: {message_ts} — no reactions found in API response")
+        return has_reactions
     except SlackApiError as e:
-        if e.response["error"] != "message_not_found":
-            print(f"  Slack error checking reactions: {e}")
-        return False
+        if e.response.get("error") == "user_not_found":
+            # Message not found, assume no reactions
+            return False
+        elif e.response.get("error") == "no_permission":
+            print(f"    WARNING: Bot lacks permission to read reactions. Check reactions:read scope.")
+            return False
+        else:
+            print(f"    Slack error checking reactions ({message_ts}): {e.response.get('error')}")
+            return False
 
 
 def get_slack_message_link(channel_id, message_ts):
