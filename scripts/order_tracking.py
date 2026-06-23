@@ -197,8 +197,12 @@ def fetch_channel_messages(channel_id, hours=24):
 
 # ── Main order tracking logic ───────────────────────────────────────────────────
 
-def check_orders():
+def check_orders(send_email=False):
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting order tracking check...")
+    if send_email:
+        print("  Mode: FINAL SEND (6am EST)")
+    else:
+        print("  Mode: SCAN ONLY (no email)")
 
     vendor_history = load_vendor_history()
     today = datetime.now().date()
@@ -250,7 +254,7 @@ def check_orders():
     four_days_ago = (today - timedelta(days=4)).isoformat()
     no_recent_orders = [
         v for v, last_date in vendor_history.items()
-        if last_date < four_days_ago
+        if last_date <= four_days_ago
     ]
 
     # Send email
@@ -280,10 +284,15 @@ def check_orders():
 
     print(f"\n  Unprocessed orders today: {len(unprocessed_today)}")
     print(f"  No orders in 4+ days: {len(no_recent_orders)}")
-    print(f"\nEmail body:\n{body}")
 
-    send_email(subject, body)
+    if send_email:
+        print(f"\nEmail body:\n{body}")
+        send_email(subject, body)
+    else:
+        print("  (Skipping email — waiting for 6am EST final send)")
 
 
 if __name__ == "__main__":
-    check_orders()
+    now_utc = datetime.now()
+    is_final_send = (now_utc.hour == 10)  # 6am EST = 10am UTC
+    check_orders(send_email=is_final_send)

@@ -2,14 +2,10 @@ name: Order Tracking Monitor
 
 on:
   schedule:
-    # 8pm EST (1am UTC next day)
-    - cron: '0 1 * * *'
-    # 9pm EST (2am UTC next day)
-    - cron: '0 2 * * *'
-    # 10pm EST (3am UTC next day)
-    - cron: '0 3 * * *'
-    # 11pm EST (4am UTC next day)
-    - cron: '0 4 * * *'
+    # 8pm EST to 5:45am EST (1am-9:45am UTC), hourly
+    - cron: '0 1,2,3,4,5,6,7,8,9 * * *'
+    # 6am EST (10am UTC) - final email send
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       test_mode:
