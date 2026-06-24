@@ -179,9 +179,9 @@ VENDOR NAME RULES — identify the vendor using these exact mappings:
   SUNDAY specials are ALWAYS offered by either TMK or Nathel — determine which one from
   the content and label it "Sunday Specials - TMK" or "Sunday Specials - Nathel".
   Only omit the supplier (use plain "<Day> Specials") if truly no supplier can be determined.
-- NEVER use "Farmlind", "Farmlind Produce", "Matt", or "Matt Lind" as a vendor — they are
-  the BUYER purchasing from these vendors, not a seller. If the only name present is
-  Farmlind/Matt, return null for vendor.
+- NEVER use "Farmlind", "Farmlind Produce", "Matt", "Matt Lind", or "Hunts Point" as a vendor — they are
+  the BUYER purchasing from these vendors (or a market reference), not a seller. If the only name present is
+  one of these, return null for vendor.
 - If no vendor can be identified → return null for vendor
 
 MULTIPLE VENDORS IN ONE MESSAGE: If the content contains separate lists for more than
@@ -761,9 +761,10 @@ def merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendo
         return None
 
     # Farmlind / Matt are the BUYER, never a vendor — drop them outright.
+    # Hunts Point is a market, not a vendor.
     low_v = vendor.lower()
-    if any(bad in low_v for bad in ("farmlind", "matt lind", "matt ")) or low_v.strip() == "matt":
-        print(f"    Skipping '{vendor}' — Farmlind/buyer is not a vendor")
+    if any(bad in low_v for bad in ("farmlind", "matt lind", "matt ", "hunts point")) or low_v.strip() == "matt":
+        print(f"    Skipping '{vendor}' — not a vendor")
         return None
 
     if not fill_only:
