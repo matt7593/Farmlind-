@@ -762,15 +762,24 @@ def merge_result_into_map(result, item_vendor_map, item_display_name, seen_vendo
         print("    Skipping — no vendor name found in content")
         return None
 
+    # Strip "Hunts Point" from vendor names - it's a market reference, not a vendor
+    low_v = vendor.lower()
+    if "hunts point" in low_v:
+        # Remove "hunts point" and any surrounding whitespace/punctuation
+        cleaned = re.sub(r"hunts\s+point[:\-\s]*", "", vendor, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"[:\-\s]+", " ", cleaned).strip()
+        if cleaned and cleaned.lower() not in ("specials",):
+            vendor = cleaned
+            print(f"    Cleaned vendor: '{cleaned}'")
+        else:
+            # If nothing meaningful left, skip it
+            print(f"    Skipping — no vendor name after removing Hunts Point reference")
+            return None
+
     # Farmlind / Matt are the BUYER, never a vendor — drop them outright.
     low_v = vendor.lower()
     if any(bad in low_v for bad in ("farmlind", "matt lind", "matt ")) or low_v.strip() == "matt":
         print(f"    Skipping '{vendor}' — Farmlind/buyer is not a vendor")
-        return None
-
-    # If vendor is just "Hunts Point" with no supplier, skip it
-    if low_v.strip() == "hunts point":
-        print(f"    Skipping '{vendor}' — Hunts Point is a market reference, not a vendor")
         return None
 
     if not fill_only:
