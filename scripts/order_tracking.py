@@ -262,7 +262,7 @@ def check_orders(send_email=False):
 
     body = f"Order Tracking Report\n{today.strftime('%m/%d/%Y')}\n\n"
 
-    body += "VENDORS WHO ORDERED BUT HAVEN'T BEEN MARKED YET (NO EMOJI):\n"
+    body += "STORES/RESTAURANTS WHO ORDERED BUT HAVEN'T BEEN MARKED YET (NO EMOJI):\n"
     if unprocessed_today:
         for v in sorted(unprocessed_today):
             body += f"  • {v}\n"
@@ -271,7 +271,7 @@ def check_orders(send_email=False):
     else:
         body += "  None — all orders marked!\n"
 
-    body += f"\nVENDORS WITH NO ORDERS IN 4+ DAYS:\n"
+    body += f"\nSTORES/RESTAURANTS WITH NO ORDERS IN 4+ DAYS:\n"
     if no_recent_orders:
         for v in sorted(no_recent_orders):
             last = vendor_history[v]
@@ -279,7 +279,7 @@ def check_orders(send_email=False):
     else:
         body += "  None — everyone ordering regularly!\n"
 
-    body += f"\n\nTotal vendors in history: {len(vendor_history)}\n"
+    body += f"\n\nTotal stores/restaurants in history: {len(vendor_history)}\n"
     body += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} EST\n"
 
     print(f"\n  Unprocessed orders today: {len(unprocessed_today)}")
