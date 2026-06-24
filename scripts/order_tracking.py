@@ -293,6 +293,6 @@ def check_orders(send_email=False):
 
 
 if __name__ == "__main__":
-    now_utc = datetime.now()
+    now_utc = datetime.utcnow()
     is_final_send = (now_utc.hour == 10)  # 6am EST = 10am UTC
     check_orders(send_email=is_final_send)
