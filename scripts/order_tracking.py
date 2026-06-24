@@ -197,9 +197,9 @@ def fetch_channel_messages(channel_id, hours=24):
 
 # ── Main order tracking logic ───────────────────────────────────────────────────
 
-def check_orders(send_email=False):
+def check_orders(should_send_email=False):
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting order tracking check...")
-    if send_email:
+    if should_send_email:
         print("  Mode: FINAL SEND (6am EST)")
     else:
         print("  Mode: SCAN ONLY (no email)")
@@ -285,7 +285,7 @@ def check_orders(send_email=False):
     print(f"\n  Unprocessed orders today: {len(unprocessed_today)}")
     print(f"  No orders in 4+ days: {len(no_recent_orders)}")
 
-    if send_email:
+    if should_send_email:
         print(f"\nEmail body:\n{body}")
         send_email(subject, body)
     else:
@@ -296,4 +296,4 @@ if __name__ == "__main__":
     now_utc = datetime.utcnow()
     test_mode = os.environ.get("TEST_MODE") == "true"
     is_final_send = test_mode or (now_utc.hour == 10)  # 6am EST = 10am UTC
-    check_orders(send_email=is_final_send)
+    check_orders(should_send_email=is_final_send)
