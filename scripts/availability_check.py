@@ -172,13 +172,16 @@ VENDOR NAME RULES — identify the vendor using these exact mappings:
 - A Nathel order/screenshot labeled with "Josh" (Josh's order/list) → "Josh Nathel"
 - A Nathel order/screenshot labeled with "Paul" (Paul's order/list) → "Paul Nathel"
 - SPECIALS lists (e.g. "Sunday Specials", "Monday Specials", ... any day Sunday-Saturday,
-  or "<day> prices/specials"): set the vendor to "<Day> Specials - <Supplier>". You MUST
-  attach the supplier/company offering the specials (the vendor name in the message),
-  normalized using the mappings above — e.g. "Tuesday Specials - TMK",
-  "Saturday Specials - Aurpack".
-  SUNDAY specials are ALWAYS offered by either TMK or Nathel — determine which one from
-  the content and label it "Sunday Specials - TMK" or "Sunday Specials - Nathel".
-  Only omit the supplier (use plain "<Day> Specials") if truly no supplier can be determined.
+  or "<day> prices/specials"): ALWAYS format the vendor as "<Day> Specials - <Supplier>". You MUST
+  identify and attach the supplier/vendor offering the specials. Search the message for:
+  • Vendor name at the start (e.g. "TMK Sunday Specials" → "Sunday Specials - TMK")
+  • Vendor in parentheses (e.g. "Sunday Specials (Nathel)" → "Sunday Specials - Nathel")
+  • Vendor after colon (e.g. "Sunday Specials: Aurpack" → "Sunday Specials - Aurpack")
+  • Vendor after "from" or "by" (e.g. "Monday Specials from TMK" → "Monday Specials - TMK")
+  • Any other format — normalize to "Monday Specials - <Vendor>"
+  Examples: "Tuesday Specials - TMK", "Saturday Specials - Aurpack", "Wednesday Specials - Nathel"
+  SUNDAY specials are ALWAYS offered by either TMK or Nathel — determine which from the content.
+  CRITICAL: A specials list MUST have a vendor attached. If you cannot find the vendor, return null vendor.
 - If "Hunts Point" is mentioned alongside vendor names (e.g. "Hunts Point: Nathel items", "Hunts Point sourced from TMK"),
   extract the actual vendor name (Nathel, TMK, etc.), NOT "Hunts Point". Hunts Point is just a market reference.
 - NEVER use "Farmlind", "Farmlind Produce", "Matt", or "Matt Lind" as a vendor — they are
@@ -251,6 +254,13 @@ def extract_prices_from_content(content_blocks, sender_name, product_names):
     # Skip messages where Claude couldn't identify a real vendor name
     if not data.get("vendor") or data["vendor"] in ("Unknown Vendor", ""):
         data["vendor"] = None
+
+    # Validate specials — they MUST have a vendor attached
+    vendor = data.get("vendor")
+    if vendor and "specials" in vendor.lower():
+        # Check if vendor is properly formatted like "Day Specials - VendorName"
+        if " - " not in vendor:
+            print(f"  ⚠️  WARNING: Special '{vendor}' missing vendor attachment. Needs format 'Day Specials - Vendor'")
 
     return data
 
