@@ -254,7 +254,7 @@ def fetch_all_recent_orders(access_tokens, days=16, max_results=60):
     for email_addr, token in access_tokens:
         try:
             result = gmail_get(token, "/users/me/messages", {
-                "q": f"in:sent subject:order ({ORDER_RECIPIENTS}) newer_than:{days}d",
+                "q": f"in:sent ({ORDER_RECIPIENTS}) newer_than:{days}d",
                 "maxResults": max_results
             })
             for m in result.get("messages", []):
