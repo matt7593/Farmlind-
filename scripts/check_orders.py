@@ -32,10 +32,11 @@ VENDORS = {
 _test_email = os.environ.get("TEST_EMAIL", "").strip()
 NOTIFY_EMAILS = [_test_email] if _test_email else ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 
-# An order plus its follow-up parts are grouped into one "session" if sent within
-# this many hours of each other. 48h covers cases where Matt emails one vendor
-# the morning of the pickup day and the others the evening before.
-SESSION_HOURS = 48
+# Asymmetric session window anchored on the most recent order email.
+# Look back 96h to catch early vendor emails (e.g. Dagele sent Monday, GG/Dottavio Thursday).
+# Only look forward 12h so add-on emails sent same day are included without bleeding into the next cycle.
+SESSION_LOOKBACK_HOURS = 96
+SESSION_FORWARD_HOURS = 12
 
 # Wait this many minutes after Matt's most recent order before sending the reminder.
 # 30 min gives him time to email all three vendors before we report anything.
@@ -447,7 +448,8 @@ def main(override_date=None):
         print("No valid tokens, exiting.")
         return
 
-    session_ms = SESSION_HOURS * 3600 * 1000
+    session_lookback_ms = SESSION_LOOKBACK_HOURS * 3600 * 1000
+    session_forward_ms = SESSION_FORWARD_HOURS * 3600 * 1000
     now_ms = int(datetime.now().timestamp() * 1000)
 
     all_orders = fetch_all_recent_orders(access_tokens)
@@ -477,8 +479,8 @@ def main(override_date=None):
         print(f"Most recent order sent {anchor_age_min:.1f} min ago — waiting until {REMIND_DELAY_MIN} min mark.")
         return
 
-    session_start = anchor_ts - session_ms
-    session_end = anchor_ts + session_ms
+    session_start = anchor_ts - session_lookback_ms
+    session_end = anchor_ts + session_forward_ms
     current_msgs = [o for o in all_orders if session_start <= o[0] <= session_end]
     prior_msgs = [o for o in all_orders if o[0] < session_start]
     print(f"Session anchored at {datetime.fromtimestamp(anchor_ts/1000)}; "
@@ -539,8 +541,8 @@ def main(override_date=None):
                 prev_anchor_ts = ts
                 break
         if prev_anchor_ts is not None:
-            p_start = prev_anchor_ts - session_ms
-            p_end = prev_anchor_ts + session_ms
+            p_start = prev_anchor_ts - session_lookback_ms
+            p_end = prev_anchor_ts + session_forward_ms
             prev_session = [o for o in prior_msgs if p_start <= o[0] <= p_end]
             prev_items = collect_vendor_items(prev_session, keywords)
         print(f"  Today: {len(today_items)} items, Previous: {len(prev_items)} items")
