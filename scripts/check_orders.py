@@ -33,9 +33,9 @@ _test_email = os.environ.get("TEST_EMAIL", "").strip()
 NOTIFY_EMAILS = [_test_email] if _test_email else ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 
 # An order plus its follow-up parts are grouped into one "session" if sent within
-# this many hours of each other. Avoids splitting an evening's order across the
-# UTC midnight boundary (which calendar-date logic does).
-SESSION_HOURS = 8
+# this many hours of each other. 48h covers cases where Matt emails one vendor
+# the morning of the pickup day and the others the evening before.
+SESSION_HOURS = 48
 
 # Wait this many minutes after Matt's most recent order before sending the reminder.
 # 30 min gives him time to email all three vendors before we report anything.
