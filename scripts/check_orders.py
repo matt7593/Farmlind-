@@ -260,7 +260,12 @@ def fetch_all_recent_orders(access_tokens, days=16, max_results=60):
             })
             for m in result.get("messages", []):
                 full = gmail_get(token, f"/users/me/messages/{m['id']}", {"format": "full"})
-                out.append((int(full.get("internalDate", 0)), token, full))
+                ts = int(full.get("internalDate", 0))
+                headers = full.get("payload", {}).get("headers", [])
+                to_val = next((h["value"] for h in headers if h.get("name","").lower() == "to"), "?")
+                subj_val = next((h["value"] for h in headers if h.get("name","").lower() == "subject"), "?")
+                print(f"  Found sent email: to={to_val!r} subject={subj_val!r} ts={ts}")
+                out.append((ts, token, full))
         except Exception as e:
             print(f"  Error fetching orders for {email_addr}: {e}")
     out.sort(key=lambda x: x[0])
