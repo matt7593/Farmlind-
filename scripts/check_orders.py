@@ -29,7 +29,8 @@ VENDORS = {
     "Dottavio":         ["dottavio"],
 }
 
-NOTIFY_EMAILS = ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
+_test_email = os.environ.get("TEST_EMAIL", "").strip()
+NOTIFY_EMAILS = [_test_email] if _test_email else ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 
 # An order plus its follow-up parts are grouped into one "session" if sent within
 # this many hours of each other. Avoids splitting an evening's order across the

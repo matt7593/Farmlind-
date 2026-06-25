@@ -16,6 +16,10 @@ on:
         description: 'Print the email preview without actually sending it'
         required: false
         default: 'false'
+      test_email:
+        description: 'Send the reminder to this address instead of Matt (leave blank for normal)'
+        required: false
+        default: ''
 
 # If a new trigger fires while a loop is already running, replace it cleanly.
 concurrency:
@@ -45,6 +49,7 @@ jobs:
           GMAIL_REFRESH_TOKEN_2: ${{ secrets.GMAIL_REFRESH_TOKEN_2 }}
           FORCE_SEND: ${{ github.event.inputs.force_send }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
+          TEST_EMAIL: ${{ github.event.inputs.test_email }}
         run: |
           set +e
           # If manually triggered with force_send, just run once immediately.
