@@ -190,8 +190,18 @@ def get_items_from_message(access_token, message_id, payload, vendor_keywords):
         if body_has_any_vendor_section(body_text):
             return []
 
-    # Body is empty or has no vendor labels — try attachments
+    # No vendor section and no other-vendor labels — standalone email sent directly
+    # to this vendor. Try the full body text first, then attachments.
     items = []
+    if body_text.strip():
+        try:
+            items = parse_items_with_claude([{"type": "text", "text": body_text}])
+            print(f"    Full-body parse returned {len(items)} item(s)")
+        except Exception as e:
+            print(f"    Claude full-body parse error: {e}")
+    if items:
+        return items
+
     for att in extract_attachments(payload):
         filename, mime, data, att_id = att
         if att_id:
@@ -345,7 +355,6 @@ def normalize_items(items):
         }]
     )
     return [l.strip().lower() for l in response.content[0].text.strip().splitlines() if l.strip()]
-
 
 
 def build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors=None):
