@@ -356,8 +356,10 @@ def build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors=None):
         "",
         "=" * 40,
     ]
-    for vendor, missing in missing_by_vendor.items():
-        sent = vendor_today.get(vendor, [])
+    for vendor, sent in vendor_today.items():
+        if not sent and vendor not in missing_by_vendor:
+            continue
+        missing = missing_by_vendor.get(vendor, [])
         lines.append("")
         lines.append(f"  {vendor.upper()}")
         lines.append(f"  {'-' * 36}")
@@ -370,7 +372,7 @@ def build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors=None):
             for item in missing:
                 lines.append(f"    - {item}")
         else:
-            lines.append(f"  No missing items.")
+            lines.append(f"  No missing items detected.")
         lines.append("")
         lines.append("=" * 40)
     if skipped_vendors:
@@ -556,8 +558,8 @@ def main(override_date=None):
     print(f"\nMissing items: {missing_by_vendor}")
     print(f"Skipped vendors: {skipped_vendors}")
 
-    # Send one combined email covering missing items + any skipped vendors
-    has_something_to_report = bool(missing_by_vendor) or bool(skipped_vendors)
+    # Send reminder covering all ordered vendors plus any skipped vendors
+    has_something_to_report = any(v for v in vendor_today.values()) or bool(skipped_vendors)
     if has_something_to_report:
         if dry:
             print("\n--- DRY RUN: email NOT sent. Preview ---")
@@ -565,7 +567,7 @@ def main(override_date=None):
         else:
             send_reminder(sender_token, sender_email, missing_by_vendor, vendor_today, skipped_vendors, today)
     else:
-        print("No missing items and no skipped vendors — nothing to report.")
+        print("No orders found — nothing to report.")
 
     if not dry:
         st["sent"] = True
