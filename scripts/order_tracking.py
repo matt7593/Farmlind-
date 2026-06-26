@@ -68,6 +68,8 @@ def get_access_token(refresh_token=None):
 
 
 def send_email(subject, body_text):
+    import sys
+    print(f"SENDING EMAIL: {subject}", file=sys.stderr)
     """Send email via Gmail API."""
     try:
         access_token = get_access_token()
@@ -291,9 +293,17 @@ def check_orders(should_send_email=False):
     else:
         print("  (Skipping email — waiting for 6am EST final send)")
 
-
 if __name__ == "__main__":
-    now_utc = datetime.utcnow()
-    test_mode = os.environ.get("TEST_MODE") == "true"
-    final_send = os.environ.get("FINAL_SEND") == "true"  # 6am EST = 10am UTC
+    import sys
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"ORDER TRACKING BOT STARTED", file=sys.stderr)
+    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (local)", file=sys.stderr)
+    print(f"UTC Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} (UTC)", file=sys.stderr)
+    final_send_raw = os.environ.get("FINAL_SEND")
+    print(f"FINAL_SEND raw value: {repr(final_send_raw)}", file=sys.stderr)
+    final_send = final_send_raw == "true"
+    print(f"FINAL_SEND parsed as: {final_send}", file=sys.stderr)
+    print(f"TEST_MODE: {os.environ.get('TEST_MODE', 'NOT SET')}", file=sys.stderr)
+    print(f"Will send email: {final_send}", file=sys.stderr)
+    print(f"{'='*60}\n", file=sys.stderr)
     check_orders(should_send_email=final_send)

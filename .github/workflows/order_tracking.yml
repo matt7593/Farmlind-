@@ -30,6 +30,21 @@ jobs:
       - name: Install dependencies
         run: pip install anthropic slack-sdk
 
+      - name: Determine if this is the 6am final send
+        id: check_time
+        run: |
+          # github.event.schedule contains the cron that triggered this (if schedule-triggered)
+          # For 6am EST (10 UTC): cron is '0 10 * * *'
+          if [[ "${{ github.event.schedule }}" == "0 10 * * *" ]] || [[ "${{ github.event.inputs.force_send }}" == "true" ]]; then
+            echo "FINAL_SEND=true" >> $GITHUB_ENV
+            echo "is_final_send=true" >> $GITHUB_OUTPUT
+            echo "✓ This is the 6am final send (FINAL_SEND=true)"
+          else
+            echo "FINAL_SEND=false" >> $GITHUB_ENV
+            echo "is_final_send=false" >> $GITHUB_OUTPUT
+            echo "○ This is a scan-only run (FINAL_SEND=false)"
+          fi
+
       - name: Run order tracking
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -38,5 +53,5 @@ jobs:
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN_1: ${{ secrets.GMAIL_REFRESH_TOKEN_1 }}
           TEST_MODE: ${{ github.event.inputs.test_mode }}
-          FINAL_SEND: ${{ github.event.schedule == '0 10 * * *' || github.event.inputs.force_send == 'true' }}
+          FINAL_SEND: ${{ env.FINAL_SEND }}
         run: python scripts/order_tracking.py
