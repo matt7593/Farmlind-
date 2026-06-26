@@ -295,5 +295,5 @@ def check_orders(should_send_email=False):
 if __name__ == "__main__":
     now_utc = datetime.utcnow()
     test_mode = os.environ.get("TEST_MODE") == "true"
-    is_final_send = test_mode or (now_utc.hour == 10)  # 6am EST = 10am UTC
-    check_orders(should_send_email=is_final_send)
+    final_send = os.environ.get("FINAL_SEND") == "true"  # 6am EST = 10am UTC
+    check_orders(should_send_email=final_send)
