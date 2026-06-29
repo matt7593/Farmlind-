@@ -104,24 +104,31 @@ def main():
     for _, tok in tokens:
         all_sent.extend(get_sent_emails(tok))
 
-    print(f"Found {len(all_sent)} emails\n")
+    print(f"Found {len(all_sent)} total emails\n")
+    
+    if all_sent:
+        print("Sample emails:")
+        for e in all_sent[:3]:
+            print(f"  To: {e['to'][:70]}")
+        print()
 
     today_items = {}
     prev_items = {}
     found = []
 
     for vendor, ve in VENDORS.items():
-        print(f"{vendor}:")
+        print(f"{vendor} (looking for: {ve}):")
         te = [e for e in all_sent if e["ts"] >= today_ts and ve.lower() in e["to"]]
         pe = [e for e in all_sent if e["ts"] < today_ts and ve.lower() in e["to"]]
+        
+        print(f"  Today: {len(te)}, Previous: {len(pe)}")
 
         if te:
             found.append(vendor)
             today_items[vendor] = extract_items(te)
-            print(f"  Today: {len(today_items[vendor])} items")
+            print(f"  Items today: {len(today_items[vendor])}")
         else:
             today_items[vendor] = []
-            print(f"  Not sent today")
 
         if pe:
             pr = max(pe, key=lambda x: x["ts"])
@@ -129,8 +136,10 @@ def main():
 
         print()
 
+    print(f"Found vendors: {found}\n")
+
     if not found:
-        print("No orders")
+        print("NO ORDERS SENT TODAY")
         return
 
     state, key = load_state(), today.isoformat()
@@ -163,7 +172,7 @@ def main():
         sender, tok = tokens[0]
         raw = f"From: {sender}\r\nTo: {', '.join(NOTIFY)}\r\nSubject: Orders\r\n\r\n{body}"
         gmail_post(tok, "/users/me/messages/send", {"raw": base64.urlsafe_b64encode(raw.encode()).decode()})
-        print("✓ Sent")
+        print("✓ Email sent")
 
 if __name__ == "__main__":
     main()
