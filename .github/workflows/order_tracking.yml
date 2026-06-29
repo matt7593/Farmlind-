@@ -6,6 +6,8 @@ on:
     - cron: '0 1,2,3,4,5,6,7,8,9 * * *'
     # 6am EST (10am UTC) - final email send
     - cron: '0 10 * * *'
+    # Backup: if 10:00 UTC fails, try again at 10:05
+    - cron: '5 10 * * *'
   workflow_dispatch:
     inputs:
       test_mode:
@@ -35,7 +37,7 @@ jobs:
         run: |
           # github.event.schedule contains the cron that triggered this (if schedule-triggered)
           # For 6am EST (10 UTC): cron is '0 10 * * *'
-          if [[ "${{ github.event.schedule }}" == "0 10 * * *" ]] || [[ "${{ github.event.inputs.force_send }}" == "true" ]]; then
+          if [[ "${{ github.event.schedule }}" == "0 10 * * *" ]] || [[ "${{ github.event.schedule }}" == "5 10 * * *" ]] || [[ "${{ github.event.inputs.force_send }}" == "true" ]]; then
             echo "FINAL_SEND=true" >> $GITHUB_ENV
             echo "is_final_send=true" >> $GITHUB_OUTPUT
             echo "✓ This is the 6am final send (FINAL_SEND=true)"
