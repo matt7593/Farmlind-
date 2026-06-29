@@ -88,14 +88,18 @@ def main():
     now = datetime.now()
     now_ts = int(now.timestamp() * 1000)
     
-    # Check from last night 7 PM EST (11 PM UTC) onwards
-    # 7 PM EST = UTC-5, so 7 PM EST = 12 AM UTC next day
+    # Window: last night 7 PM EST to 2 AM EST (23:00-06:10 UTC)
+    # 7 PM EST = 12 AM UTC next day
+    # 2 AM EST = 7 AM UTC
     yesterday = now - timedelta(days=1)
-    last_night_7pm_est = datetime.combine(yesterday.date(), datetime.min.time().replace(hour=0)) + timedelta(hours=12)  # 12 AM UTC = 7 PM EST previous day
-    today_ts = int(last_night_7pm_est.timestamp() * 1000)
+    window_start = datetime.combine(yesterday.date(), datetime.min.time().replace(hour=0)) + timedelta(hours=12)  # 12 AM UTC
+    window_end = datetime.combine(now.date(), datetime.min.time().replace(hour=7))  # 7 AM UTC
+    
+    start_ts = int(window_start.timestamp() * 1000)
+    end_ts = int(window_end.timestamp() * 1000)
 
-    print(f"Checking from: {datetime.fromtimestamp(today_ts/1000)}")
-    print(f"Current time: {now}\n")
+    print(f"Window: {datetime.fromtimestamp(start_ts/1000)} to {datetime.fromtimestamp(end_ts/1000)} UTC")
+    print(f"Current: {now}\n")
 
     tokens = []
     for a in ACCOUNTS:
@@ -112,12 +116,15 @@ def main():
     for _, tok in tokens:
         all_sent.extend(get_sent_emails(tok))
 
-    print(f"Found {len(all_sent)} total emails\n")
+    print(f"Total emails found: {len(all_sent)}\n")
     
-    if all_sent:
-        print("Sample emails:")
-        for e in all_sent[:3]:
-            print(f"  To: {e['to'][:70]}")
+    in_window = [e for e in all_sent if start_ts <= e["ts"] <= end_ts]
+    print(f"Emails in window: {len(in_window)}\n")
+    
+    if in_window:
+        print("Emails in window:")
+        for e in in_window:
+            print(f"  {datetime.fromtimestamp(e['ts']/1000)} - To: {e['to'][:80]}")
         print()
 
     today_items = {}
@@ -125,18 +132,23 @@ def main():
     found = []
 
     for vendor, ve in VENDORS.items():
-        print(f"{vendor} (looking for: {ve}):")
-        te = [e for e in all_sent if e["ts"] >= today_ts and ve.lower() in e["to"]]
-        pe = [e for e in all_sent if e["ts"] < today_ts and ve.lower() in e["to"]]
+        print(f"{vendor}:")
+        print(f"  Looking for: {ve}")
         
-        print(f"  Window: {len(te)}, Previous: {len(pe)}")
+        te = [e for e in all_sent if start_ts <= e["ts"] <= end_ts and ve.lower() in e["to"]]
+        pe = [e for e in all_sent if e["ts"] < start_ts and ve.lower() in e["to"]]
+        
+        print(f"  In window: {len(te)}, Before window: {len(pe)}")
 
         if te:
             found.append(vendor)
             today_items[vendor] = extract_items(te)
-            print(f"  Items: {len(today_items[vendor])}")
+            print(f"  Items extracted: {len(today_items[vendor])}")
         else:
             today_items[vendor] = []
+            for e in in_window:
+                if ve.lower() in e["to"]:
+                    print(f"  DEBUG: Email found! To: {e['to']}")
 
         if pe:
             pr = max(pe, key=lambda x: x["ts"])
@@ -144,7 +156,7 @@ def main():
 
         print()
 
-    print(f"Found vendors: {found}\n")
+    print(f"Vendors found in window: {found}\n")
 
     if not found:
         print("NO ORDERS IN WINDOW")
