@@ -2,10 +2,9 @@ import json
 import base64
 import urllib.request
 import urllib.parse
-import io
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import anthropic
 
@@ -14,36 +13,21 @@ CLIENT_SECRET = os.environ["GMAIL_CLIENT_SECRET"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 ACCOUNTS = [
-    {
-        "email": "matt@farmlindproduce.com",
-        "refresh_token": os.environ["GMAIL_REFRESH_TOKEN_1"]
-    },
-    {
-        "email": "farmlindproduce@gmail.com",
-        "refresh_token": os.environ["GMAIL_REFRESH_TOKEN_2"]
-    }
+    {"email": "matt@farmlindproduce.com", "refresh_token": os.environ["GMAIL_REFRESH_TOKEN_1"]},
+    {"email": "farmlindproduce@gmail.com", "refresh_token": os.environ["GMAIL_REFRESH_TOKEN_2"]}
 ]
 
 VENDORS = {
-    "Goodness Gardens": ["goodness"],
-    "Dagele Brothers":  ["dagele"],
-    "Dottavio":         ["dottavio"],
+    "Goodness Gardens": "orders@goodnessgardens.com",
+    "Dagele Brothers": "office@dagelebrothersproduce.com",
+    "Dottavio": "anthony@mdottavioproduce.com",
 }
 
 _test_email = os.environ.get("TEST_EMAIL", "").strip()
 NOTIFY_EMAILS = [_test_email] if _test_email else ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 
-# Asymmetric session window anchored on the most recent order email.
-# Look back 96h to catch early vendor emails (e.g. Dagele sent Monday, GG/Dottavio Thursday).
-# Only look forward 12h so add-on emails sent same day are included without bleeding into the next cycle.
-SESSION_LOOKBACK_HOURS = 96
-SESSION_FORWARD_HOURS = 12
-
-# Wait this many minutes after Matt's most recent order before sending the reminder.
-# 30 min gives him time to email all three vendors before we report anything.
-REMIND_DELAY_MIN = 30
-
-REMINDER_SUBJECT = "Order Check -"  # single combined email: missing items + skipped vendors
+REMINDER_SUBJECT = "Order Check -"
+STATE_FILE = ".order_state.json"
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -85,14 +69,14 @@ def gmail_post(access_token, path, body):
 
 
 def decode_b64(data):
-    return base64.urlsafe_b64decode(data + "==")
+    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="ignore")
 
 
 def extract_text_from_part(part):
     mime = part.get("mimeType", "")
     body_data = part.get("body", {}).get("data", "")
     if mime == "text/plain" and body_data:
-        return decode_b64(body_data).decode("utf-8", errors="ignore")
+        return decode_b64(body_data)
     for sub in part.get("parts", []):
         result = extract_text_from_part(sub)
         if result:
@@ -100,320 +84,55 @@ def extract_text_from_part(part):
     return ""
 
 
-def extract_attachments(payload):
-    attachments = []
-    def walk(part):
-        filename = part.get("filename", "")
-        mime = part.get("mimeType", "")
-        body = part.get("body", {})
-        data = body.get("data", "")
-        if filename and data:
-            attachments.append((filename, mime, decode_b64(data), None))
-        elif filename and body.get("attachmentId"):
-            attachments.append((filename, mime, None, body["attachmentId"]))
-        for sub in part.get("parts", []):
-            walk(sub)
-    walk(payload)
-    return attachments
-
-
-def fetch_attachment_data(access_token, message_id, attachment_id):
-    result = gmail_get(access_token, f"/users/me/messages/{message_id}/attachments/{attachment_id}")
-    return decode_b64(result["data"])
-
-
-def parse_items_with_claude(content_blocks):
-    message = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        messages=[{
-            "role": "user",
-            "content": content_blocks + [{
-                "type": "text",
-                "text": (
-                    "This is a produce order. Extract every ordered item as a simple list, "
-                    "one item per line, including quantities if present. "
-                    "Return only the list, no other text. If there are no order items, reply NONE."
-                )
-            }]
-        }]
-    )
-    text = message.content[0].text.strip()
-    if text.upper() == "NONE":
-        return []
-    return [l.strip() for l in text.splitlines() if l.strip()]
-
-
-def body_has_any_vendor_section(body_text):
-    all_keywords = [kw for kws in VENDORS.values() for kw in kws]
-    for line in body_text.splitlines():
-        if any(kw in line.strip().lower() for kw in all_keywords):
-            return True
-    return False
-
-
-def extract_vendor_section(body_text, vendor_keywords):
-    """Extract only the lines belonging to this vendor's section of the email body."""
-    lines = body_text.splitlines()
-    section_lines = []
-    in_section = False
-
-    all_keywords = [kw for kws in VENDORS.values() for kw in kws]
-
-    for line in lines:
-        line_lower = line.strip().lower()
-
-        is_our_vendor = any(kw in line_lower for kw in vendor_keywords)
-        is_other_vendor = any(kw in line_lower for kw in all_keywords) and not is_our_vendor
-
-        if is_our_vendor:
-            in_section = True
-            continue
-        elif is_other_vendor and in_section:
-            break
-        elif in_section and line.strip():
-            section_lines.append(line.strip())
-
-    return "\n".join(section_lines)
-
-
-def get_items_from_message(access_token, message_id, payload, vendor_keywords):
-    """Get order items for a specific vendor from an email."""
-    body_text = extract_text_from_part(payload)
-
-    if body_text.strip():
-        section = extract_vendor_section(body_text, vendor_keywords)
-        if section.strip():
-            try:
-                return parse_items_with_claude([{"type": "text", "text": section}])
-            except Exception as e:
-                print(f"    Claude parse error: {e}")
-        # Body has vendor-labeled sections but not ours — wrong email for this vendor
-        if body_has_any_vendor_section(body_text):
-            return []
-
-    # No vendor section and no other-vendor labels — standalone email sent directly
-    # to this vendor. Try the full body text first, then attachments.
-    items = []
-    if body_text.strip():
-        try:
-            items = parse_items_with_claude([{"type": "text", "text": body_text}])
-            print(f"    Full-body parse returned {len(items)} item(s)")
-        except Exception as e:
-            print(f"    Claude full-body parse error: {e}")
-    if items:
-        return items
-
-    for att in extract_attachments(payload):
-        filename, mime, data, att_id = att
-        if att_id:
-            data = fetch_attachment_data(access_token, message_id, att_id)
-        print(f"    Processing attachment: {filename}")
-        try:
-            content_block = None
-            if mime == "application/pdf" or filename.lower().endswith(".pdf"):
-                content_block = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": base64.b64encode(data).decode()}}
-            elif mime.startswith("image/"):
-                content_block = {"type": "image", "source": {"type": "base64", "media_type": mime, "data": base64.b64encode(data).decode()}}
-            elif filename.lower().endswith((".xlsx", ".xls")):
-                import openpyxl
-                wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
-                text = "\n".join(" ".join(str(c) for c in row if c is not None) for sheet in wb.worksheets for row in sheet.iter_rows(values_only=True))
-                content_block = {"type": "text", "text": text}
-            elif filename.lower().endswith((".docx", ".doc")):
-                from docx import Document
-                doc = Document(io.BytesIO(data))
-                content_block = {"type": "text", "text": "\n".join(p.text for p in doc.paragraphs if p.text.strip())}
-            else:
-                try:
-                    content_block = {"type": "text", "text": data.decode("utf-8", errors="ignore")}
-                except Exception:
-                    pass
-            if content_block:
-                items.extend(parse_items_with_claude([content_block]))
-        except Exception as e:
-            print(f"    Attachment error: {e}")
-
-    return items
-
-
-ORDER_RECIPIENTS = "to:orders@goodnessgardens.com OR to:Office@dagelebrothersproduce.com OR to:anthony@mdottavioproduce.com"
-
-VENDOR_EMAILS = {
-    "Goodness Gardens": "orders@goodnessgardens.com",
-    "Dagele Brothers":  "office@dagelebrothersproduce.com",
-    "Dottavio":         "anthony@mdottavioproduce.com",
-}
-
-
-def msg_sent_to_vendor(msg, vendor_name):
-    """Return True if the message's To header matches this vendor's email address."""
-    vendor_addr = VENDOR_EMAILS.get(vendor_name, "").lower()
-    if not vendor_addr:
-        return False
-    headers = msg.get("payload", {}).get("headers", [])
-    for h in headers:
-        if h.get("name", "").lower() == "to":
-            if vendor_addr in h.get("value", "").lower():
-                return True
-    return False
-
-
-def fetch_all_recent_orders(access_tokens, days=16, max_results=60):
-    """Return [(ts_ms, access_token, full_message)] for every order email sent in the
-    last `days`, across all accounts, sorted oldest-first. Uses internalDate (epoch ms,
-    timezone-independent) so there are no calendar-boundary issues."""
-    out = []
-    for email_addr, token in access_tokens:
-        try:
-            result = gmail_get(token, "/users/me/messages", {
-                "q": f"in:sent ({ORDER_RECIPIENTS}) newer_than:{days}d",
-                "maxResults": max_results
-            })
-            for m in result.get("messages", []):
-                full = gmail_get(token, f"/users/me/messages/{m['id']}", {"format": "full"})
-                ts = int(full.get("internalDate", 0))
-                headers = full.get("payload", {}).get("headers", [])
-                to_val = next((h["value"] for h in headers if h.get("name","").lower() == "to"), "?")
-                subj_val = next((h["value"] for h in headers if h.get("name","").lower() == "subject"), "?")
-                print(f"  Found sent email: to={to_val!r} subject={subj_val!r} ts={ts}")
-                out.append((ts, token, full))
-        except Exception as e:
-            print(f"  Error fetching orders for {email_addr}: {e}")
-    out.sort(key=lambda x: x[0])
-    return out
-
-
-def reminder_already_sent_after(access_token, since_ms, subject_prefix):
-    """Return True if an email with the given subject prefix was already sent after since_ms."""
-    since_dt = datetime.fromtimestamp(since_ms / 1000)
-    after = since_dt.strftime("%Y/%m/%d")
+def fetch_emails(access_token, days=1):
+    """Fetch emails from last N days."""
+    emails = []
     try:
         result = gmail_get(access_token, "/users/me/messages", {
-            "q": f"in:sent subject:\"{subject_prefix}\" after:{after}",
-            "maxResults": 10
+            "q": f"in:sent newer_than:{days}d",
+            "maxResults": 100
         })
         for m in result.get("messages", []):
-            full = gmail_get(access_token, f"/users/me/messages/{m['id']}", {"format": "metadata"})
-            if int(full.get("internalDate", 0)) > since_ms:
-                return True
-    except Exception:
-        pass
-    return False
+            full = gmail_get(access_token, f"/users/me/messages/{m['id']}", {"format": "full"})
+            headers = full.get("payload", {}).get("headers", [])
+            to_val = next((h["value"] for h in headers if h.get("name","").lower() == "to"), "")
+            subj = next((h["value"] for h in headers if h.get("name","").lower() == "subject"), "")
+            if to_val and subj:
+                body = extract_text_from_part(full.get("payload", {}))
+                ts = int(full.get("internalDate", 0))
+                emails.append({"to": to_val.lower(), "subject": subj, "body": body, "ts": ts})
+    except Exception as e:
+        print(f"  Error fetching emails: {e}")
+    return emails
 
 
-def collect_vendor_items(messages, keywords):
-    """Given a list of (ts, token, full_message), return all order items for this vendor,
-    deduplicating identical vendor sections that appear in more than one account."""
-    items = []
-    seen_sections = set()
-    for ts, token, msg in messages:
-        body = extract_text_from_part(msg.get("payload", {}))
-        section = extract_vendor_section(body, keywords).strip()
-        if section and section in seen_sections:
-            continue
-        msg_items = get_items_from_message(token, msg["id"], msg.get("payload", {}), keywords)
-        if msg_items:
-            if section:
-                seen_sections.add(section)
-            items.extend(msg_items)
-    return items
+def vendor_in_email(vendor_email, email_to):
+    """Check if vendor is in the To header."""
+    return vendor_email.lower() in email_to.lower()
 
 
-def item_matches(prev_name, today_name):
-    """True if these two normalized item names refer to the same product, tolerant of
-    typos and minor spelling differences (e.g. 'oregeno' vs 'oregano')."""
-    import difflib
-    # Exact substring match (handles 'green bell' vs 'jumbo green bell')
-    if prev_name in today_name or today_name in prev_name:
-        return True
-    # Whole-string fuzzy match for typos
-    if difflib.SequenceMatcher(None, prev_name, today_name).ratio() >= 0.82:
-        return True
-    # Word-level fuzzy match: every word in the shorter name has a close match
-    # in the longer one (handles a typo inside a multi-word item)
-    short, long = sorted([prev_name.split(), today_name.split()], key=len)
-    if short and all(
-        any(difflib.SequenceMatcher(None, w, lw).ratio() >= 0.85 for lw in long)
-        for w in short
-    ):
-        return True
-    return False
+def extract_items(emails, vendor_email):
+    """Extract items ordered for a vendor using Claude."""
+    matching = [e for e in emails if vendor_in_email(vendor_email, e["to"])]
+    if not matching:
+        return []
 
+    combined = "\n\n".join([f"Subject: {e['subject']}\n{e['body']}" for e in matching])
 
-def normalize_items(items):
-    """Ask Claude to return just the product names, no quantities."""
-    response = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        messages=[{
-            "role": "user",
-            "content": (
-                "Strip all leading quantities and numbers from these produce order items and return only the product names, one per line. "
-                "Keep descriptors like colors, sizes, and grades (e.g. 'jumbo', 'red', 'fancy', '60ct'). "
-                "No bullet points, no numbers at the start, no extra text.\n\n"
-                + "\n".join(items)
-            )
-        }]
-    )
-    return [l.strip().lower() for l in response.content[0].text.strip().splitlines() if l.strip()]
-
-
-def build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors=None):
-    lines = [
-        "Hi Matt,",
-        "",
-        "Here is a summary of tonight's orders and what may be missing:",
-        "",
-        "=" * 40,
-    ]
-    for vendor, sent in vendor_today.items():
-        missing = missing_by_vendor.get(vendor, [])
-        lines.append("")
-        lines.append(f"  {vendor.upper()}")
-        lines.append(f"  {'-' * 36}")
-        lines.append(f"  This week you sent these items:")
-        for item in sent:
-            lines.append(f"    - {item}")
-        lines.append("")
-        if missing:
-            lines.append(f"  You may have forgotten these items ({len(missing)}):")
-            for item in missing:
-                lines.append(f"    - {item}")
-        else:
-            lines.append(f"  No missing items detected.")
-        lines.append("")
-        lines.append("=" * 40)
-    if skipped_vendors:
-        lines.append("")
-        lines.append("  *** YOU DID NOT SEND AN ORDER TO: ***")
-        for vendor in skipped_vendors:
-            lines.append(f"    *** {vendor.upper()} ***")
-        lines.append("")
-        lines.append("  If you skipped them on purpose, ignore this.")
-        lines.append("  Otherwise you may have forgotten to email them.")
-        lines.append("")
-        lines.append("=" * 40)
-    lines += ["", "- Farmlind Order Bot"]
-    return "\n".join(lines)
-
-
-def preview_reminder(missing_by_vendor, vendor_today, skipped_vendors, today):
-    print(f"Subject: {REMINDER_SUBJECT} {today.strftime('%A %b %d')}")
-    print(f"To: {', '.join(NOTIFY_EMAILS)}")
-    print(build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors))
-
-
-def send_reminder(access_token, sender_email, missing_by_vendor, vendor_today, skipped_vendors, today):
-    subject = f"{REMINDER_SUBJECT} {today.strftime('%A %b %d')}"
-    body = build_reminder_body(missing_by_vendor, vendor_today, skipped_vendors)
-    raw = f"From: {sender_email}\r\nTo: {', '.join(NOTIFY_EMAILS)}\r\nSubject: {subject}\r\n\r\n{body}"
-    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
-    gmail_post(access_token, "/users/me/messages/send", {"raw": encoded})
-    print("Reminder sent.")
-
-
-STATE_FILE = ".order_state.json"
+    try:
+        response = claude.messages.create(
+            model="claude-opus-4-8",
+            max_tokens=500,
+            messages=[{
+                "role": "user",
+                "content": f"Extract all items/products ordered. Return as list, one per line:\n\n{combined}"
+            }]
+        )
+        items = response.content[0].text.strip().split("\n")
+        return [i.strip() for i in items if i.strip()]
+    except Exception as e:
+        print(f"  Error extracting: {e}")
+        return []
 
 
 def load_state():
@@ -429,195 +148,186 @@ def save_state(state):
         with open(STATE_FILE, "w") as f:
             json.dump(state, f, indent=2)
 
-        # Persist to git
         try:
-            # Ensure git is configured
             subprocess.run(["git", "config", "user.email", "github-actions@farmlind.local"],
                          capture_output=True, check=False)
             subprocess.run(["git", "config", "user.name", "GitHub Actions"],
                          capture_output=True, check=False)
-
-            # Add and commit the state file
             subprocess.run(["git", "add", STATE_FILE], check=True, capture_output=True)
             result = subprocess.run(["git", "commit", "-m", "Update order check state"],
                                   capture_output=True, text=True)
-
             if result.returncode == 0:
-                print(f"State committed to git: {STATE_FILE}")
-                # Push to remote
-                push_result = subprocess.run(["git", "push"], capture_output=True, text=True)
-                if push_result.returncode == 0:
-                    print("State pushed to remote")
-                else:
-                    print(f"Warning: failed to push: {push_result.stderr}")
-            else:
-                # No changes or other error - this is OK
-                if "nothing to commit" in result.stderr or "nothing to commit" in result.stdout:
-                    print(f"State file unchanged, no commit needed")
-                else:
-                    print(f"Git commit returned: {result.stderr}")
+                subprocess.run(["git", "push"], capture_output=True, text=True)
         except Exception as e:
             print(f"Warning: failed to persist state to git: {e}")
     except Exception as e:
         print(f"Error saving state file: {e}")
 
 
-def main(override_date=None):
-    today = override_date if override_date else datetime.now()
-    print(f"Checking orders for {today.strftime('%Y-%m-%d %A')}")
+def build_email(today_items, prev_items, today):
+    lines = [
+        f"Order Summary - {today.strftime('%A, %B %d, %Y')}",
+        "=" * 50,
+        ""
+    ]
 
+    for vendor in sorted(VENDORS.keys()):
+        lines.append(f"\n{vendor}:")
+
+        today_list = today_items.get(vendor, [])
+        prev_list = prev_items.get(vendor, [])
+
+        if today_list:
+            lines.append("  Ordered today:")
+            for item in today_list[:5]:
+                lines.append(f"    + {item}")
+            if len(today_list) > 5:
+                lines.append(f"    + ... and {len(today_list) - 5} more")
+        else:
+            lines.append("  ✗ Nothing ordered")
+
+        if prev_list:
+            missing = [item for item in prev_list if item not in today_list]
+            if missing:
+                lines.append("  Missing (ordered before but not today):")
+                for item in missing[:5]:
+                    lines.append(f"    - {item}")
+                if len(missing) > 5:
+                    lines.append(f"    - ... and {len(missing) - 5} more")
+
+    lines += ["", "- Farmlind Order Bot"]
+    return "\n".join(lines)
+
+
+def send_email(access_token, sender, today_items, prev_items, today):
+    subject = f"{REMINDER_SUBJECT} {today.strftime('%A %b %d')}"
+    body = build_email(today_items, prev_items, today)
+    raw = f"From: {sender}\r\nTo: {', '.join(NOTIFY_EMAILS)}\r\nSubject: {subject}\r\n\r\n{body}"
+    encoded = base64.urlsafe_b64encode(raw.encode()).decode()
+    gmail_post(access_token, "/users/me/messages/send", {"raw": encoded})
+    print("✓ Reminder sent.")
+
+
+def main():
+    today = datetime.now().date()
+    now_ms = int(datetime.now().timestamp() * 1000)
+    print(f"=== Order Check for {today.strftime('%A, %B %d, %Y')} ===\n")
+
+    # Authenticate both accounts
     access_tokens = []
     for account in ACCOUNTS:
         try:
             token = get_access_token(account["refresh_token"])
             access_tokens.append((account["email"], token))
-            print(f"Authenticated: {account['email']}")
+            print(f"✓ Authenticated: {account['email']}")
         except Exception as e:
-            print(f"Auth failed for {account['email']}: {e}")
+            print(f"✗ Auth failed for {account['email']}: {e}")
 
     if not access_tokens:
-        print("No valid tokens, exiting.")
+        print("No valid tokens.")
         return
 
-    session_lookback_ms = SESSION_LOOKBACK_HOURS * 3600 * 1000
-    session_forward_ms = SESSION_FORWARD_HOURS * 3600 * 1000
-    now_ms = int(datetime.now().timestamp() * 1000)
+    print()
 
-    all_orders = fetch_all_recent_orders(access_tokens)
-    if not all_orders:
-        print("No recent order emails found — nothing to do.")
+    # Get TODAY's emails from both accounts
+    all_today = []
+    for email_addr, token in access_tokens:
+        emails = fetch_emails(token, days=1)
+        all_today.extend(emails)
+        print(f"  Found {len(emails)} emails from {email_addr}")
+
+    if not all_today:
+        print("\n✓ No emails sent today.")
         return
 
-    # Anchor the current order session on the most recent order.
-    if override_date:
-        cutoff = int(datetime.combine(override_date.date(), datetime.max.time()).timestamp() * 1000)
-        candidates = [o for o in all_orders if o[0] <= cutoff]
-        if not candidates:
-            print("No order on or before that date — nothing to do.")
-            return
-        anchor_ts = candidates[-1][0]
-    else:
-        anchor_ts = all_orders[-1][0]
+    print(f"✓ Total: {len(all_today)} emails\n")
 
-    anchor_age_min = (now_ms - anchor_ts) / 60000
-    sender_email, sender_token = access_tokens[0]
-    force = bool(override_date) or env_is_true("FORCE_SEND")
-    dry = env_is_true("DRY_RUN")
+    # Extract items ordered TODAY for each vendor
+    today_items = {}
+    vendors_ordered_today = []
 
-    # Wait 30 min after the most recent order so Matt has time to email all vendors
-    # before we report anything (he often sends them a few minutes apart).
-    if not force and anchor_age_min < REMIND_DELAY_MIN:
-        print(f"Most recent order sent {anchor_age_min:.1f} min ago — waiting until {REMIND_DELAY_MIN} min mark.")
-        return
+    for vendor, vendor_email in VENDORS.items():
+        if any(vendor_in_email(vendor_email, e["to"]) for e in all_today):
+            vendors_ordered_today.append(vendor)
+            items = extract_items(all_today, vendor_email)
+            today_items[vendor] = items
+            print(f"✓ {vendor}: {len(items)} items")
+        else:
+            print(f"✗ {vendor}: not ordered")
+            today_items[vendor] = []
 
-    session_start = anchor_ts - session_lookback_ms
-    session_end = anchor_ts + session_forward_ms
-    current_msgs = [o for o in all_orders if session_start <= o[0] <= session_end]
-    prior_msgs = [o for o in all_orders if o[0] < session_start]
-    print(f"Session anchored at {datetime.fromtimestamp(anchor_ts/1000)}; "
-          f"{len(current_msgs)} order email(s) in session, {len(prior_msgs)} prior. "
-          f"Order is {anchor_age_min:.0f} min old.")
+    print()
 
-    # --- Cheap detection (no Claude): which vendors were ordered, which were skipped ---
-    vendor_has_today = {}
-    skipped_vendors = []
-    for vendor_name, keywords in VENDORS.items():
-        has_today = any(
-            extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
-            or msg_sent_to_vendor(msg, vendor_name)
-            for ts, token, msg in current_msgs
-        )
-        vendor_has_today[vendor_name] = has_today
-        if not has_today:
-            ordered_before = any(
-                extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
-                or msg_sent_to_vendor(msg, vendor_name)
-                for ts, token, msg in prior_msgs
-            )
-            if ordered_before:
-                skipped_vendors.append(vendor_name)
+    # Get PREVIOUS orders for each vendor (all emails before today)
+    prev_items = {}
+    for email_addr, token in access_tokens:
+        all_emails = fetch_emails(token, days=365)  # Get last year
+        today_ts = int(datetime.combine(today, datetime.min.time()).timestamp() * 1000)
 
-    if not any(vendor_has_today.values()):
-        print("\nNo orders in this session — nothing to compare.")
-        return
+        for vendor, vendor_email in VENDORS.items():
+            # Find most recent email before today
+            prev_emails = [e for e in all_emails if e["ts"] < today_ts and vendor_in_email(vendor_email, e["to"])]
+            if prev_emails and vendor not in prev_items:
+                items = extract_items(prev_emails, vendor_email)
+                prev_items[vendor] = items
 
-    # --- Check if we already sent the reminder for this anchor ---
+    # Handle first email tracking and 30-minute timer
     state = load_state()
-    key = str(anchor_ts)
-    st = state.get(key, {})
+    today_key = today.isoformat()
+    state_today = state.get(today_key, {})
 
-    already_sent = bool(st.get("sent"))
-    if not force and not already_sent:
-        already_sent = reminder_already_sent_after(sender_token, anchor_ts, REMINDER_SUBJECT)
+    first_email_time = state_today.get("first_email_time")
+    if all_today and not first_email_time:
+        first_email_time = now_ms
+        state_today["first_email_time"] = first_email_time
+        state[today_key] = state_today
+        save_state(state)
+
+    already_sent = state_today.get("sent", False)
+    force = env_is_true("FORCE_SEND")
+    dry = env_is_true("DRY_RUN")
+    scan_only = env_is_true("SCAN_ONLY")
+
+    if scan_only:
+        print("📊 SCAN MODE\n")
+        if first_email_time:
+            mins_ago = (now_ms - first_email_time) / 1000 / 60
+            print(f"First email: {mins_ago:.1f} min ago")
+            if mins_ago >= 30:
+                print("✓ Ready to send")
+            else:
+                print(f"Will send in {30 - mins_ago:.1f} min")
+        return
 
     if already_sent and not force:
-        print("Reminder already sent for this order session — nothing to do.")
+        print("✓ Already sent today.")
         return
 
-    # --- Run item comparison via Claude ---
-    vendor_today = {}
-    missing_by_vendor = {}
-    for vendor_name, keywords in VENDORS.items():
-        if not vendor_has_today[vendor_name]:
-            continue  # not ordered this session — omit from email body
-        print(f"\nChecking {vendor_name}...")
-        today_items = collect_vendor_items(current_msgs, keywords)
-        vendor_today[vendor_name] = today_items
+    send_now = force
+    if not force and first_email_time:
+        mins_since = (now_ms - first_email_time) / 1000 / 60
+        if mins_since < 30:
+            print(f"First email was {mins_since:.1f} min ago - will send in {30 - mins_since:.1f} min")
+            return
+        send_now = True
 
-        prev_items = []
-        prev_anchor_ts = None
-        for ts, token, msg in reversed(prior_msgs):
-            if (extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
-                    or msg_sent_to_vendor(msg, vendor_name)):
-                prev_anchor_ts = ts
-                break
-        if prev_anchor_ts is not None:
-            p_start = prev_anchor_ts - session_lookback_ms
-            p_end = prev_anchor_ts + session_forward_ms
-            prev_session = [o for o in prior_msgs if p_start <= o[0] <= p_end]
-            prev_items = collect_vendor_items(prev_session, keywords)
-        print(f"  Today: {len(today_items)} items, Previous: {len(prev_items)} items")
+    if send_now and vendors_ordered_today:
+        sender_email, sender_token = access_tokens[0]
 
-        if today_items and prev_items:
-            try:
-                today_names = normalize_items(today_items)
-                prev_names = normalize_items(prev_items)
-                missing, seen = [], set()
-                for name in prev_names:
-                    if name in seen:
-                        continue
-                    seen.add(name)
-                    if not any(item_matches(name, tn) for tn in today_names):
-                        missing.append(name)
-                if missing:
-                    missing_by_vendor[vendor_name] = missing
-            except Exception as e:
-                print(f"  Comparison error for {vendor_name}: {e}")
-
-    print(f"\nMissing items: {missing_by_vendor}")
-    print(f"Skipped vendors: {skipped_vendors}")
-
-    # Send reminder covering all ordered vendors plus any skipped vendors
-    has_something_to_report = bool(vendor_today) or bool(skipped_vendors)
-    if has_something_to_report:
         if dry:
-            print("\n--- DRY RUN: email NOT sent. Preview ---")
-            preview_reminder(missing_by_vendor, vendor_today, skipped_vendors, today)
+            print("--- DRY RUN ---\n")
+            print(build_email(today_items, prev_items, today))
         else:
-            send_reminder(sender_token, sender_email, missing_by_vendor, vendor_today, skipped_vendors, today)
-    else:
-        print("No orders found — nothing to report.")
-
-    if not dry:
-        st["sent"] = True
-        state[key] = st
+            send_email(sender_token, sender_email, today_items, prev_items, today)
+            state_today["sent"] = True
+            state[today_key] = state_today
+            save_state(state)
+    elif send_now:
+        print("✓ No vendors ordered today.")
+        state_today["sent"] = True
+        state[today_key] = state_today
         save_state(state)
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1:
-        override = datetime.strptime(sys.argv[1], "%Y-%m-%d")
-        main(override_date=override)
-    else:
-        main()
+    main()
