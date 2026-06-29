@@ -254,8 +254,12 @@ def msg_sent_to_vendor(msg, vendor_name):
     headers = msg.get("payload", {}).get("headers", [])
     for h in headers:
         if h.get("name", "").lower() == "to":
-            if vendor_addr in h.get("value", "").lower():
+            to_value = h.get("value", "").lower()
+            if vendor_addr in to_value:
+                print(f"      ✓ {vendor_name}: matched {vendor_addr} in {to_value}")
                 return True
+            else:
+                print(f"      ✗ {vendor_name}: looking for {vendor_addr} in {to_value}")
     return False
 
 
@@ -522,11 +526,13 @@ def main(override_date=None):
     vendor_has_today = {}
     skipped_vendors = []
     for vendor_name, keywords in VENDORS.items():
+        print(f"  Detecting {vendor_name}...")
         has_today = any(
             extract_vendor_section(extract_text_from_part(msg.get("payload", {})), keywords).strip()
             or msg_sent_to_vendor(msg, vendor_name)
             for ts, token, msg in current_msgs
         )
+        print(f"    Result: {vendor_name} = {has_today}")
         vendor_has_today[vendor_name] = has_today
         if not has_today:
             ordered_before = any(
