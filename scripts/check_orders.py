@@ -117,6 +117,7 @@ def main():
         all_sent.extend(get_sent_emails(tok, 1))
     
     if not all_sent:
+        print(f"  Looking for: {vendor_email.lower()}")
         print("No emails sent today")
         return
     
