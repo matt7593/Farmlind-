@@ -1,9 +1,9 @@
+#!/usr/bin/env python3
 import json, base64, urllib.request, urllib.parse, os, subprocess
-from datetime import datetime, timedelta
+from datetime import datetime
 import anthropic
 
-CLIENT_ID = os.environ["GMAIL_CLIENT_ID"]
-CLIENT_SECRET = os.environ["GMAIL_CLIENT_SECRET"]
+CLIENT_ID, CLIENT_SECRET = os.environ["GMAIL_CLIENT_ID"], os.environ["GMAIL_CLIENT_SECRET"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 ACCOUNTS = [
@@ -18,7 +18,7 @@ VENDORS = {
 }
 
 TEST_EMAIL = os.environ.get("TEST_EMAIL", "").strip()
-NOTIFY = [TEST_EMAIL] if TEST_EMAIL else ["matt@farmlindproduce.com"]
+NOTIFY = [TEST_EMAIL] if TEST_EMAIL else ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 STATE = ".order_state.json"
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -47,10 +47,10 @@ def get_body(part):
         if r: return r
     return ""
 
-def get_sent_emails(tok):
+def get_sent_emails(tok, days=30):
     emails = []
     try:
-        for m in gmail_get(tok, "/users/me/messages", {"q": "in:sent", "maxResults": 200}).get("messages", []):
+        for m in gmail_get(tok, "/users/me/messages", {"q": f"in:sent newer_than:{days}d", "maxResults": 100}).get("messages", []):
             full = gmail_get(tok, f"/users/me/messages/{m['id']}", {"format": "full"})
             headers = full.get("payload", {}).get("headers", [])
             to_val = next((h["value"] for h in headers if h.get("name", "").lower() == "to"), "")
@@ -58,18 +58,18 @@ def get_sent_emails(tok):
             ts = int(full.get("internalDate", 0))
             if to_val and body:
                 emails.append({"to": to_val.lower(), "body": body, "ts": ts})
-    except Exception as e:
-        print(f"Error: {e}")
+    except Exception as e: print(f"Error: {e}")
     return emails
 
-def extract_items(emails):
+def vendor_in_to(vendor_email, to_header):
+    return vendor_email.lower() in to_header.lower()
+
+def items(emails):
     if not emails: return []
     try:
-        text = "\n\n".join([e["body"] for e in emails])
-        r = claude.messages.create(model="claude-opus-4-8", max_tokens=1000, messages=[{"role": "user", "content": f"Extract items, one per line:\n\n{text}"}])
+        r = claude.messages.create(model="claude-opus-4-8", max_tokens=1000, messages=[{"role": "user", "content": f"List items ordered, one per line:\n\n" + "\n\n".join([e["body"] for e in emails])}])
         return [x.strip() for x in r.content[0].text.strip().split("\n") if x.strip()]
-    except:
-        return []
+    except: return []
 
 def load_state():
     try:
@@ -78,121 +78,95 @@ def load_state():
 
 def save_state(s):
     with open(STATE, "w") as f: json.dump(s, f, indent=2)
-    subprocess.run(["git", "config", "user.email", "github-actions@farmlind.local"], capture_output=True)
-    subprocess.run(["git", "config", "user.name", "GitHub Actions"], capture_output=True)
-    subprocess.run(["git", "add", STATE], capture_output=True)
-    subprocess.run(["git", "commit", "-m", "Update"], capture_output=True)
+    subprocess.run(["git", "config", "user.email", "github-actions@farmlind.local"], capture_output=True, check=False)
+    subprocess.run(["git", "config", "user.name", "GitHub Actions"], capture_output=True, check=False)
+    subprocess.run(["git", "add", STATE], capture_output=True, check=False)
+    subprocess.run(["git", "commit", "-m", "Update state"], capture_output=True)
     subprocess.run(["git", "push"], capture_output=True)
 
-def main():
-    now = datetime.now()
-    now_ts = int(now.timestamp() * 1000)
-    
-    # Window: last night 7 PM EST to 2 AM EST (23:00-06:10 UTC)
-    # 7 PM EST = 12 AM UTC next day
-    # 2 AM EST = 7 AM UTC
-    yesterday = now - timedelta(days=1)
-    window_start = datetime.combine(yesterday.date(), datetime.min.time().replace(hour=0)) + timedelta(hours=12)  # 12 AM UTC
-    window_end = datetime.combine(now.date(), datetime.min.time().replace(hour=7))  # 7 AM UTC
-    
-    start_ts = int(window_start.timestamp() * 1000)
-    end_ts = int(window_end.timestamp() * 1000)
-
-    print(f"Window: {datetime.fromtimestamp(start_ts/1000)} to {datetime.fromtimestamp(end_ts/1000)} UTC")
-    print(f"Current: {now}\n")
-
-    tokens = []
-    for a in ACCOUNTS:
-        try: 
-            tokens.append((a["email"], get_token(a["refresh_token"])))
-            print(f"✓ {a['email']}")
-        except Exception as e: 
-            print(f"✗ {e}")
-
-    if not tokens: return
-    print()
-
-    all_sent = []
-    for _, tok in tokens:
-        all_sent.extend(get_sent_emails(tok))
-
-    print(f"Total emails found: {len(all_sent)}\n")
-    
-    in_window = [e for e in all_sent if start_ts <= e["ts"] <= end_ts]
-    print(f"Emails in window: {len(in_window)}\n")
-    
-    if in_window:
-        print("Emails in window:")
-        for e in in_window:
-            print(f"  {datetime.fromtimestamp(e['ts']/1000)} - To: {e['to'][:80]}")
-        print()
-
-    today_items = {}
-    prev_items = {}
-    found = []
-
-    for vendor, ve in VENDORS.items():
-        print(f"{vendor}:")
-        print(f"  Looking for: {ve}")
-        
-        te = [e for e in all_sent if start_ts <= e["ts"] <= end_ts and (ve.lower() in e["to"] or ve.split("@")[0].lower() in e["to"])]
-        pe = [e for e in all_sent if e["ts"] < start_ts and ve.lower() in e["to"]]
-        
-        print(f"  In window: {len(te)}, Before window: {len(pe)}")
-
-        if te:
-            found.append(vendor)
-            today_items[vendor] = extract_items(te)
-            print(f"  Items extracted: {len(today_items[vendor])}")
-        else:
-            today_items[vendor] = []
-            for e in in_window:
-                if ve.lower() in e["to"]:
-                    print(f"  DEBUG: Email found! To: {e['to']}")
-
-        if pe:
-            pr = max(pe, key=lambda x: x["ts"])
-            prev_items[vendor] = extract_items([pr])
-
-        print()
-
-    print(f"Vendors found in window: {found}\n")
-
-    if not found:
-        print("NO ORDERS IN WINDOW")
-        return
-
-    state, key = load_state(), now.date().isoformat()
-    st = state.get(key, {})
-    if found and not st.get("ft"): st["ft"] = now_ts; state[key] = st; save_state(state)
-
-    force = os.environ.get("FORCE_SEND", "").lower() == "true"
-    dry = os.environ.get("DRY_RUN", "").lower() == "true"
-    
-    lines = ["ORDER SUMMARY\n"]
+def build_body(today, prev, date):
+    lines = ["ORDER SUMMARY", str(date.strftime("%A, %B %d")), "=" * 50, ""]
     for v in sorted(VENDORS.keys()):
-        t, p = today_items.get(v, []), prev_items.get(v, [])
-        lines.append(f"{v}:")
+        t, p = today.get(v, []), prev.get(v, [])
+        lines += ["", v, "-" * len(v)]
         if t:
-            lines.append("Ordered:")
-            lines.extend([f"  • {x}" for x in t])
+            lines.append("TODAY:")
+            lines += [f"  {i}. {x}" for i, x in enumerate(t, 1)]
         else:
             lines.append("Not ordered")
-        if p:
-            m = [x for x in p if x not in t]
-            if m:
-                lines.append("Missing:")
-                lines.extend([f"  ✗ {x}" for x in m])
-        lines.append("")
+        if p and (m := [x for x in p if x not in t]):
+            lines += ["", "MISSING:"] + [f"  {i}. {x}" for i, x in enumerate(m, 1)]
+    return "\n".join(lines)
 
-    body = "\n".join(lines)
-    if dry:
-        print(body)
-    elif found:
+def send(tok, sender, today, prev, date):
+    body = build_body(today, prev, date)
+    raw = f"From: {sender}\r\nTo: {', '.join(NOTIFY)}\r\nSubject: Orders\r\n\r\n{body}"
+    gmail_post(tok, "/users/me/messages/send", {"raw": base64.urlsafe_b64encode(raw.encode()).decode()})
+
+def main():
+    today = datetime.now().date()
+    now = int(datetime.now().timestamp() * 1000)
+    tokens = []
+    for a in ACCOUNTS:
+        try: tokens.append((a["email"], get_token(a["refresh_token"]))); print(f"✓ {a['email']}")
+        except Exception as e: print(f"✗ {e}")
+    if not tokens: return
+    
+    all_sent = []
+    for _, tok in tokens:
+        all_sent.extend(get_sent_emails(tok, 1))
+    
+    if not all_sent:
+        print("No emails sent today")
+        return
+    
+    print(f"Found {len(all_sent)} sent emails\n")
+    
+    today_items, prev_items, found = {}, {}, []
+    
+    for v, ve in VENDORS.items():
+        print(f"{v}...")
+        today_emails = [e for e in all_sent if vendor_in_to(ve, e["to"])]
+        
+        if today_emails:
+            found.append(v)
+            today_items[v] = items(today_emails)
+            print(f"  Found: {len(today_items[v])} items")
+        else:
+            today_items[v] = []
+            print(f"  Not sent")
+    
+    print()
+    
+    prev_items = {}
+    for v, ve in VENDORS.items():
+        all_prev = []
+        for _, tok in tokens:
+            all_prev.extend(get_sent_emails(tok, 365))
+        
+        today_ts = int(datetime.combine(today, datetime.min.time()).timestamp() * 1000)
+        prev_emails = [e for e in all_prev if e["ts"] < today_ts and vendor_in_to(ve, e["to"])]
+        if prev_emails:
+            prev_items[v] = items(prev_emails)
+    
+    state, key = load_state(), today.isoformat()
+    st = state.get(key, {})
+    ft = st.get("ft")
+    if found and not ft: st["ft"] = ft = now; state[key] = st; save_state(state)
+    
+    scan = os.environ.get("SCAN_ONLY", "").lower() == "true"
+    force = os.environ.get("FORCE_SEND", "").lower() == "true"
+    dry = os.environ.get("DRY_RUN", "").lower() == "true"
+    sent = st.get("sent", False)
+    
+    if scan:
+        if ft: mins = (now - ft) / 1000 / 60; print(f"First: {mins:.0f}m - {'Ready' if mins >= 30 else f'wait {30-mins:.0f}m'}")
+        return
+    if sent and not force: print("Already sent"); return
+    if not force and ft and (now - ft) / 1000 / 60 < 30: mins_left = 30 - (now - ft) / 1000 / 60; print(f"Wait {mins_left:.0f}m"); return
+    if (force or (ft and (now - ft) / 1000 / 60 >= 30)) and found:
         sender, tok = tokens[0]
-        raw = f"From: {sender}\r\nTo: {', '.join(NOTIFY)}\r\nSubject: Orders\r\n\r\n{body}"
-        gmail_post(tok, "/users/me/messages/send", {"raw": base64.urlsafe_b64encode(raw.encode()).decode()})
-        print("✓ Email sent")
+        if dry: print(build_body(today_items, prev_items, today))
+        else: send(tok, sender, today_items, prev_items, today); st["sent"] = True; state[key] = st; save_state(state); print("Email sent")
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
