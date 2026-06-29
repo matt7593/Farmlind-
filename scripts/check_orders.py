@@ -47,7 +47,7 @@ def get_body(part):
         if r: return r
     return ""
 
-def get_sent_emails(tok, account_email="unknown"):
+def get_sent_emails(tok):
     emails = []
     try:
         for m in gmail_get(tok, "/users/me/messages", {"q": "in:sent", "maxResults": 200}).get("messages", []):
@@ -57,7 +57,7 @@ def get_sent_emails(tok, account_email="unknown"):
             body = get_body(full.get("payload", {}))
             ts = int(full.get("internalDate", 0))
             if to_val and body:
-                emails.append({"to": to_val.lower(), "body": body, "ts": ts, "from_account": account_email})
+                emails.append({"to": to_val.lower(), "body": body, "ts": ts})
     except Exception as e:
         print(f"Error: {e}")
     return emails
@@ -113,22 +113,17 @@ def main():
     print()
 
     all_sent = []
-    for account_email, tok in tokens:
-        all_sent.extend(get_sent_emails(tok, account_email))
+    for _, tok in tokens:
+        all_sent.extend(get_sent_emails(tok))
 
     print(f"Total emails found: {len(all_sent)}\n")
     
     in_window = [e for e in all_sent if start_ts <= e["ts"] <= end_ts]
     print(f"Emails in window: {len(in_window)}\n")
-    account_counts = {}
     
     if in_window:
         print("Emails in window:")
-    account_counts = {}
         for e in in_window:
-    print(f"By account: {account_counts}")
-        acc = e.get("from_account", "unknown")
-        account_counts[acc] = account_counts.get(acc, 0) + 1
             print(f"  {datetime.fromtimestamp(e['ts']/1000)} - To: {e['to'][:80]}")
         print()
 
@@ -152,9 +147,6 @@ def main():
         else:
             today_items[vendor] = []
             for e in in_window:
-    print(f"By account: {account_counts}")
-        acc = e.get("from_account", "unknown")
-        account_counts[acc] = account_counts.get(acc, 0) + 1
                 if ve.lower() in e["to"]:
                     print(f"  DEBUG: Email found! To: {e['to']}")
 
