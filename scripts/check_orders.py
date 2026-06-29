@@ -87,7 +87,7 @@ def save_state(s):
 def main():
     today = datetime.now().date()
     now = int(datetime.now().timestamp() * 1000)
-    today_ts = int((datetime.now().timestamp() - 86400) * 1000)  # Last 24 hours
+    today_ts = int(datetime.combine(today, datetime.min.time()).timestamp() * 1000)
 
     tokens = []
     for a in ACCOUNTS:
