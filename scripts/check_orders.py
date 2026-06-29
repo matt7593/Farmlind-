@@ -210,6 +210,7 @@ def build_email(today_items, prev_items, today):
     lines.append("- Farmlind Order Bot")
     return "
 ".join(lines)
+".join(lines)
 
 
 def send_email(access_token, sender, today_items, prev_items, today):
