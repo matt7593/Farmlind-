@@ -166,37 +166,50 @@ def save_state(state):
 
 def build_email(today_items, prev_items, today):
     lines = [
-        f"Order Summary - {today.strftime('%A, %B %d, %Y')}",
-        "=" * 50,
+        "ORDER CHECK REPORT",
+        f"{today.strftime('%A, %B %d, %Y')}",
+        "=" * 70,
         ""
     ]
 
     for vendor in sorted(VENDORS.keys()):
-        lines.append(f"\n{vendor}:")
+        lines.append("")
+        lines.append("=" * 70)
+        lines.append(f"{vendor.upper()}")
+        lines.append("=" * 70)
 
         today_list = today_items.get(vendor, [])
         prev_list = prev_items.get(vendor, [])
 
         if today_list:
-            lines.append("  Ordered today:")
-            for item in today_list[:5]:
-                lines.append(f"    + {item}")
-            if len(today_list) > 5:
-                lines.append(f"    + ... and {len(today_list) - 5} more")
+            lines.append("")
+            lines.append("ORDERED TODAY:")
+            for i, item in enumerate(today_list, 1):
+                lines.append(f"  {i}. {item}")
         else:
-            lines.append("  ✗ Nothing ordered")
+            lines.append("")
+            lines.append("ORDERED TODAY: NOTHING")
 
         if prev_list:
             missing = [item for item in prev_list if item not in today_list]
             if missing:
-                lines.append("  Missing (ordered before but not today):")
-                for item in missing[:5]:
-                    lines.append(f"    - {item}")
-                if len(missing) > 5:
-                    lines.append(f"    - ... and {len(missing) - 5} more")
+                lines.append("")
+                lines.append("MISSING (ordered before, not today):")
+                for i, item in enumerate(missing, 1):
+                    lines.append(f"  {i}. {item}")
+            else:
+                lines.append("")
+                lines.append("MISSING: Nothing - all previous items ordered!")
+        else:
+            lines.append("")
+            lines.append("MISSING: No previous orders to compare")
 
-    lines += ["", "- Farmlind Order Bot"]
-    return "\n".join(lines)
+    lines.append("")
+    lines.append("=" * 70)
+    lines.append("")
+    lines.append("- Farmlind Order Bot")
+    return "
+".join(lines)
 
 
 def send_email(access_token, sender, today_items, prev_items, today):
