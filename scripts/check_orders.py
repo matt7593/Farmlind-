@@ -135,7 +135,7 @@ def main():
         print(f"{vendor}:")
         print(f"  Looking for: {ve}")
         
-        te = [e for e in all_sent if start_ts <= e["ts"] <= end_ts and ve.lower() in e["to"]]
+        te = [e for e in all_sent if start_ts <= e["ts"] <= end_ts and (ve.lower() in e["to"] or ve.split("@")[0].lower() in e["to"])]
         pe = [e for e in all_sent if e["ts"] < start_ts and ve.lower() in e["to"]]
         
         print(f"  In window: {len(te)}, Before window: {len(pe)}")
