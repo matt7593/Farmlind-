@@ -124,31 +124,26 @@ def main():
     
     today_items, prev_items, found = {}, {}, []
     
-    for v, ve in VENDORS.items():
-        print(f"{v}...")
-        today_emails = [e for e in all_sent if vendor_in_to(ve, e["to"])]
+    for vendor, vendor_email in VENDORS.items():
+        print(f"{vendor}:")
+        
+        today_emails = [e for e in all_sent if e["ts"] >= today_ts and vendor_email.lower() in e["to"]]
+        prev_emails = [e for e in all_sent if e["ts"] < today_ts and vendor_email.lower() in e["to"]]
         
         if today_emails:
-            found.append(v)
-            today_items[v] = items(today_emails)
-            print(f"  Found: {len(today_items[v])} items")
+            found_vendors.append(vendor)
+            today_items[vendor] = extract_items(today_emails)
+            print(f"  Today: {len(today_items[vendor])} items")
         else:
-            today_items[v] = []
-            print(f"  Not sent")
-    
-    print()
-    
-    prev_items = {}
-    for v, ve in VENDORS.items():
-        all_prev = []
-        for _, tok in tokens:
-            all_prev.extend(get_sent_emails(tok, 365))
+            today_items[vendor] = []
+            print(f"  No email sent")
         
-        today_ts = int(datetime.combine(today, datetime.min.time()).timestamp() * 1000)
-        prev_emails = [e for e in all_prev if e["ts"] < today_ts and vendor_in_to(ve, e["to"])]
         if prev_emails:
-            prev_items[v] = items(prev_emails)
-    
+            most_recent = max(prev_emails, key=lambda x: x["ts"])
+            prev_items[vendor] = extract_items([most_recent])
+            print(f"  Previous: {len(prev_items[vendor])} items")
+        
+        print()
     state, key = load_state(), today.isoformat()
     st = state.get(key, {})
     ft = st.get("ft")
