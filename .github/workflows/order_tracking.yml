@@ -4,12 +4,12 @@ on:
   schedule:
     # 8pm EST to 5:45am EST (1am-9:45am UTC), hourly
     - cron: '0 1,2,3,4,5,6,7,8,9 * * *'
-    # 6am EST (10am UTC) - final email send with multiple backups
-    - cron: '0 10 * * *'
-    - cron: '5 10 * * *'
-    - cron: '10 10 * * *'
-    - cron: '15 10 * * *'
-    - cron: '20 10 * * *'
+    # 6am EST (11am UTC) - final email send with multiple backups
+    - cron: '0 11 * * *'
+    - cron: '5 11 * * *'
+    - cron: '10 11 * * *'
+    - cron: '15 11 * * *'
+    - cron: '20 11 * * *'
   workflow_dispatch:
     inputs:
       test_mode:
@@ -38,8 +38,8 @@ jobs:
         id: check_time
         run: |
           # github.event.schedule contains the cron that triggered this (if schedule-triggered)
-          # For 6am EST (10 UTC): cron is 0-20 min past 10 UTC
-          if [[ "${{ github.event.schedule }}" == "0 10 * * *" ]] || [[ "${{ github.event.schedule }}" == "5 10 * * *" ]] || [[ "${{ github.event.schedule }}" == "10 10 * * *" ]] || [[ "${{ github.event.schedule }}" == "15 10 * * *" ]] || [[ "${{ github.event.schedule }}" == "20 10 * * *" ]] || [[ "${{ github.event.inputs.force_send }}" == "true" ]]; then
+          # For 6am EST (11 UTC): cron is 0-20 min past 11 UTC
+          if [[ "${{ github.event.schedule }}" == "0 11 * * *" ]] || [[ "${{ github.event.schedule }}" == "5 11 * * *" ]] || [[ "${{ github.event.schedule }}" == "10 11 * * *" ]] || [[ "${{ github.event.schedule }}" == "15 11 * * *" ]] || [[ "${{ github.event.schedule }}" == "20 11 * * *" ]] || [[ "${{ github.event.inputs.force_send }}" == "true" ]]; then
             echo "FINAL_SEND=true" >> $GITHUB_ENV
             echo "is_final_send=true" >> $GITHUB_OUTPUT
             echo "✓ This is the 6am final send (FINAL_SEND=true)"
