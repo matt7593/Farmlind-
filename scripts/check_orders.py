@@ -1,5 +1,5 @@
 import json, base64, urllib.request, urllib.parse, os, subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 import anthropic
 
 CLIENT_ID = os.environ["GMAIL_CLIENT_ID"]
@@ -85,9 +85,17 @@ def save_state(s):
     subprocess.run(["git", "push"], capture_output=True)
 
 def main():
-    today = datetime.now().date()
-    now = int(datetime.now().timestamp() * 1000)
-    today_ts = int(datetime.combine(today, datetime.min.time()).timestamp() * 1000)
+    now = datetime.now()
+    now_ts = int(now.timestamp() * 1000)
+    
+    # Check from last night 7 PM EST (11 PM UTC) onwards
+    # 7 PM EST = UTC-5, so 7 PM EST = 12 AM UTC next day
+    yesterday = now - timedelta(days=1)
+    last_night_7pm_est = datetime.combine(yesterday.date(), datetime.min.time().replace(hour=0)) + timedelta(hours=12)  # 12 AM UTC = 7 PM EST previous day
+    today_ts = int(last_night_7pm_est.timestamp() * 1000)
+
+    print(f"Checking from: {datetime.fromtimestamp(today_ts/1000)}")
+    print(f"Current time: {now}\n")
 
     tokens = []
     for a in ACCOUNTS:
@@ -121,12 +129,12 @@ def main():
         te = [e for e in all_sent if e["ts"] >= today_ts and ve.lower() in e["to"]]
         pe = [e for e in all_sent if e["ts"] < today_ts and ve.lower() in e["to"]]
         
-        print(f"  Today: {len(te)}, Previous: {len(pe)}")
+        print(f"  Window: {len(te)}, Previous: {len(pe)}")
 
         if te:
             found.append(vendor)
             today_items[vendor] = extract_items(te)
-            print(f"  Items today: {len(today_items[vendor])}")
+            print(f"  Items: {len(today_items[vendor])}")
         else:
             today_items[vendor] = []
 
@@ -139,12 +147,12 @@ def main():
     print(f"Found vendors: {found}\n")
 
     if not found:
-        print("NO ORDERS SENT TODAY")
+        print("NO ORDERS IN WINDOW")
         return
 
-    state, key = load_state(), today.isoformat()
+    state, key = load_state(), now.date().isoformat()
     st = state.get(key, {})
-    if found and not st.get("ft"): st["ft"] = now; state[key] = st; save_state(state)
+    if found and not st.get("ft"): st["ft"] = now_ts; state[key] = st; save_state(state)
 
     force = os.environ.get("FORCE_SEND", "").lower() == "true"
     dry = os.environ.get("DRY_RUN", "").lower() == "true"
@@ -154,7 +162,7 @@ def main():
         t, p = today_items.get(v, []), prev_items.get(v, [])
         lines.append(f"{v}:")
         if t:
-            lines.append("Ordered today:")
+            lines.append("Ordered:")
             lines.extend([f"  • {x}" for x in t])
         else:
             lines.append("Not ordered")
