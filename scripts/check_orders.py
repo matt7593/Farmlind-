@@ -4,6 +4,7 @@ import urllib.request
 import urllib.parse
 import io
 import os
+import subprocess
 from datetime import datetime
 
 import anthropic
@@ -426,9 +427,39 @@ def load_state():
 def save_state(state):
     try:
         with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
-    except Exception:
-        pass
+            json.dump(state, f, indent=2)
+
+        # Persist to git
+        try:
+            # Ensure git is configured
+            subprocess.run(["git", "config", "user.email", "github-actions@farmlind.local"],
+                         capture_output=True, check=False)
+            subprocess.run(["git", "config", "user.name", "GitHub Actions"],
+                         capture_output=True, check=False)
+
+            # Add and commit the state file
+            subprocess.run(["git", "add", STATE_FILE], check=True, capture_output=True)
+            result = subprocess.run(["git", "commit", "-m", "Update order check state"],
+                                  capture_output=True, text=True)
+
+            if result.returncode == 0:
+                print(f"State committed to git: {STATE_FILE}")
+                # Push to remote
+                push_result = subprocess.run(["git", "push"], capture_output=True, text=True)
+                if push_result.returncode == 0:
+                    print("State pushed to remote")
+                else:
+                    print(f"Warning: failed to push: {push_result.stderr}")
+            else:
+                # No changes or other error - this is OK
+                if "nothing to commit" in result.stderr or "nothing to commit" in result.stdout:
+                    print(f"State file unchanged, no commit needed")
+                else:
+                    print(f"Git commit returned: {result.stderr}")
+        except Exception as e:
+            print(f"Warning: failed to persist state to git: {e}")
+    except Exception as e:
+        print(f"Error saving state file: {e}")
 
 
 def main(override_date=None):
