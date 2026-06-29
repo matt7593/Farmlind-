@@ -47,15 +47,22 @@ def get_body(part):
         if r: return r
     return ""
 
-def get_emails(tok, vendor_email, days=30):
+def get_sent_emails(tok, days=30):
     emails = []
     try:
-        for m in gmail_get(tok, "/users/me/messages", {"q": f"from:{vendor_email} newer_than:{days}d", "maxResults": 50}).get("messages", []):
+        for m in gmail_get(tok, "/users/me/messages", {"q": f"in:sent newer_than:{days}d", "maxResults": 100}).get("messages", []):
             full = gmail_get(tok, f"/users/me/messages/{m['id']}", {"format": "full"})
+            headers = full.get("payload", {}).get("headers", [])
+            to_val = next((h["value"] for h in headers if h.get("name", "").lower() == "to"), "")
             body = get_body(full.get("payload", {}))
-            if body: emails.append({"body": body, "ts": int(full.get("internalDate", 0))})
+            ts = int(full.get("internalDate", 0))
+            if to_val and body:
+                emails.append({"to": to_val.lower(), "body": body, "ts": ts})
     except Exception as e: print(f"Error: {e}")
     return emails
+
+def vendor_in_to(vendor_email, to_header):
+    return vendor_email.lower() in to_header.lower()
 
 def items(emails):
     if not emails: return []
@@ -81,10 +88,14 @@ def build_body(today, prev, date):
     lines = ["ORDER SUMMARY", str(date.strftime("%A, %B %d")), "=" * 50, ""]
     for v in sorted(VENDORS.keys()):
         t, p = today.get(v, []), prev.get(v, [])
-        lines += ["", v, "-" * len(v), f"Today: {len(t)} items" if t else "Not ordered"]
-        if t: lines += [f"  {i}. {x}" for i, x in enumerate(t, 1)]
+        lines += ["", v, "-" * len(v)]
+        if t:
+            lines.append("TODAY:")
+            lines += [f"  {i}. {x}" for i, x in enumerate(t, 1)]
+        else:
+            lines.append("Not ordered")
         if p and (m := [x for x in p if x not in t]):
-            lines += ["", "Missing:"] + [f"  {i}. {x}" for i, x in enumerate(m, 1)]
+            lines += ["", "MISSING:"] + [f"  {i}. {x}" for i, x in enumerate(m, 1)]
     return "\n".join(lines)
 
 def send(tok, sender, today, prev, date):
@@ -101,18 +112,42 @@ def main():
         except Exception as e: print(f"✗ {e}")
     if not tokens: return
     
+    all_sent = []
+    for _, tok in tokens:
+        all_sent.extend(get_sent_emails(tok, 1))
+    
+    if not all_sent:
+        print("No emails sent today")
+        return
+    
+    print(f"Found {len(all_sent)} sent emails\n")
+    
     today_items, prev_items, found = {}, {}, []
+    
     for v, ve in VENDORS.items():
-        te, pe = [], []
+        print(f"{v}...")
+        today_emails = [e for e in all_sent if vendor_in_to(ve, e["to"])]
+        
+        if today_emails:
+            found.append(v)
+            today_items[v] = items(today_emails)
+            print(f"  Found: {len(today_items[v])} items")
+        else:
+            today_items[v] = []
+            print(f"  Not sent")
+    
+    print()
+    
+    prev_items = {}
+    for v, ve in VENDORS.items():
+        all_prev = []
         for _, tok in tokens:
-            te.extend(get_emails(tok, ve, 1))
-            pe.extend(get_emails(tok, ve, 365))
-        if te: found.append(v); today_items[v] = items(te)
-        else: today_items[v] = []
-        if pe:
-            today_ts = int(datetime.combine(today, datetime.min.time()).timestamp() * 1000)
-            prev_only = [e for e in pe if e["ts"] < today_ts]
-            if prev_only: prev_items[v] = items(prev_only)
+            all_prev.extend(get_sent_emails(tok, 365))
+        
+        today_ts = int(datetime.combine(today, datetime.min.time()).timestamp() * 1000)
+        prev_emails = [e for e in all_prev if e["ts"] < today_ts and vendor_in_to(ve, e["to"])]
+        if prev_emails:
+            prev_items[v] = items(prev_emails)
     
     state, key = load_state(), today.isoformat()
     st = state.get(key, {})
@@ -127,11 +162,11 @@ def main():
     if scan:
         if ft: mins = (now - ft) / 1000 / 60; print(f"First: {mins:.0f}m - {'Ready' if mins >= 30 else f'wait {30-mins:.0f}m'}")
         return
-    if sent and not force: return
-    if not force and ft and (now - ft) / 1000 / 60 < 30: print(f"Wait {30-(now-ft)/1000/60:.0f}m"); return
+    if sent and not force: print("Already sent"); return
+    if not force and ft and (now - ft) / 1000 / 60 < 30: mins_left = 30 - (now - ft) / 1000 / 60; print(f"Wait {mins_left:.0f}m"); return
     if (force or (ft and (now - ft) / 1000 / 60 >= 30)) and found:
         sender, tok = tokens[0]
         if dry: print(build_body(today_items, prev_items, today))
-        else: send(tok, sender, today_items, prev_items, today); st["sent"] = True; state[key] = st; save_state(state)
+        else: send(tok, sender, today_items, prev_items, today); st["sent"] = True; state[key] = st; save_state(state); print("Email sent")
 
 if __name__ == "__main__": main()
