@@ -175,6 +175,7 @@ def send_reminder(access_token, sender_email, vendors_ordered, vendors_not_order
 
 def main():
     today = datetime.now().date()
+    now_ms = int(datetime.now().timestamp() * 1000)
     print(f"=== Order Check for {today.strftime('%A, %B %d, %Y')} ===\n")
 
     # Get access tokens
@@ -224,17 +225,55 @@ def main():
     # Check if reminder was already sent today
     state = load_state()
     today_key = today.isoformat()
+    state_today = state.get(today_key, {})
 
-    already_sent = state.get(today_key, {}).get("sent", False)
+    already_sent = state_today.get("sent", False)
     force = env_is_true("FORCE_SEND")
     dry = env_is_true("DRY_RUN")
+    scan_only = env_is_true("SCAN_ONLY")
 
-    if already_sent and not force:
-        print("✓ Reminder already sent today — nothing to do.")
+    # Track when we first detected emails
+    first_email_time = state_today.get("first_email_time")
+    if all_todays_emails and not first_email_time:
+        # First time we've seen emails today - record the time
+        first_email_time = now_ms
+        state_today["first_email_time"] = first_email_time
+        state[today_key] = state_today
+        save_state(state)
+        print(f"✓ First email detected at {datetime.fromtimestamp(first_email_time/1000).strftime('%H:%M:%S')}")
+
+    if scan_only:
+        print("📊 SCAN MODE: Monitoring for orders...\n")
+        if first_email_time:
+            time_since_first = (now_ms - first_email_time) / 1000 / 60  # minutes
+            print(f"First email was {time_since_first:.1f} minutes ago")
+            if time_since_first >= 30:
+                print("✓ 30 minutes passed - ready to send email")
+            else:
+                minutes_left = 30 - time_since_first
+                print(f"Will send email in {minutes_left:.1f} minutes\n")
+        print(build_reminder_body(vendors_ordered, vendors_not_ordered, today))
         return
 
-    # Send reminder
-    if vendors_not_ordered or force:
+    # Decide whether to send
+    send_email_now = False
+
+    if force:
+        send_email_now = True
+    elif already_sent:
+        print("✓ Reminder already sent today — nothing to do.")
+        return
+    elif first_email_time:
+        time_since_first = (now_ms - first_email_time) / 1000 / 60  # minutes
+        if time_since_first >= 30:
+            send_email_now = True
+        else:
+            print(f"First email was {time_since_first:.1f} minutes ago")
+            print(f"Will send reminder in {30 - time_since_first:.1f} minutes")
+            return
+
+    # Send reminder if conditions met
+    if send_email_now and (vendors_not_ordered or force):
         sender_email, sender_token = access_tokens[0]
 
         if dry:
@@ -244,10 +283,14 @@ def main():
             send_reminder(sender_token, sender_email, vendors_ordered, vendors_not_ordered, today)
 
             # Save state
-            state[today_key] = {"sent": True}
+            state_today["sent"] = True
+            state[today_key] = state_today
             save_state(state)
-    else:
+    elif send_email_now:
         print("✓ All vendors ordered — no reminder needed.")
+        state_today["sent"] = True
+        state[today_key] = state_today
+        save_state(state)
 
 
 if __name__ == "__main__":

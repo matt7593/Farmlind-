@@ -2,26 +2,23 @@ name: Matt Order Check
 
 on:
   schedule:
-    # Reliable infrequent triggers (GitHub honors these far better than */5).
-    # The job itself loops every 3 min during the evening window (see run step).
-    - cron: '0 23 * * *'    # 7pm ET — start the tight evening loop
-    - cron: '0 */3 * * *'   # every 3 hours — safety net for off-window orders
+    - cron: '0 23 * * *'    # 7pm EST — start the evening loop
+    - cron: '0 */3 * * *'   # every 3 hours — safety net
   workflow_dispatch:
     inputs:
       force_send:
-        description: 'Force send the reminder email even if already sent or outside delay window'
+        description: 'Force send reminder'
         required: false
         default: 'false'
       dry_run:
-        description: 'Print the email preview without actually sending it'
+        description: 'Preview without sending'
         required: false
         default: 'false'
       test_email:
-        description: 'Send the reminder to this address instead of Matt (leave blank for normal)'
+        description: 'Send to this address'
         required: false
         default: ''
 
-# If a new trigger fires while a loop is already running, replace it cleanly.
 concurrency:
   group: order-check
   cancel-in-progress: true
@@ -32,14 +29,11 @@ jobs:
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
-        run: pip install anthropic openpyxl python-docx
-
+        run: pip install anthropic
       - name: Run order check
         env:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
@@ -52,31 +46,48 @@ jobs:
           TEST_EMAIL: ${{ github.event.inputs.test_email }}
         run: |
           set +e
-          # If manually triggered with force_send, just run once immediately.
+          
           if [ "$FORCE_SEND" = "true" ] || [ "$DRY_RUN" = "true" ]; then
-            echo "Manual trigger: single check with FORCE_SEND=$FORCE_SEND DRY_RUN=$DRY_RUN"
+            echo "Manual trigger"
             python scripts/check_orders.py
             exit 0
           fi
+
           hour=$(date -u +%H)
-          # Evening window in UTC = 23:00-05:59 (7pm-2am ET).
-          # During the window, loop every 3 minutes until 2:10am ET (06:10 UTC).
-          # Outside the window, do a single quick check (safety net).
+
+          # Evening window: 23:00-06:10 UTC (7pm-2:10am EST)
           case "$hour" in
             23|00|01|02|03|04|05)
+              # Set end time for loop
               if [ "$hour" = "23" ]; then
-                end=$(date -u -d 'tomorrow 06:10' +%s)
+                end_time=$(date -u -d 'tomorrow 06:10' +%s)
               else
-                end=$(date -u -d 'today 06:10' +%s)
+                end_time=$(date -u -d 'today 06:10' +%s)
               fi
-              echo "Evening window: looping every 3 min until 06:10 UTC (2am ET)."
-              while [ "$(date -u +%s)" -lt "$end" ]; do
+
+              echo "Evening window (7pm-2:10am EST): monitoring..."
+              
+              # Loop every 3 minutes until 2:10am
+              while true; do
+                current_time=$(date -u +%s)
+
+                # Check if past end time
+                if [ "$current_time" -ge "$end_time" ]; then
+                  echo "Reached 2:10am EST - final check"
+                  python scripts/check_orders.py
+                  exit 0
+                fi
+
+                # Scan mode - script will decide when to send based on 30-min timer
+                export SCAN_ONLY=true
+                echo "[$(date +'%Y-%m-%d %H:%M:%S')] Checking..."
                 python scripts/check_orders.py
-                [ "$(date -u +%s)" -lt "$end" ] && sleep 180
+                
+                sleep 180
               done
               ;;
             *)
-              echo "Off-window run: single check."
+              echo "Outside evening window: single check"
               python scripts/check_orders.py
               ;;
           esac
