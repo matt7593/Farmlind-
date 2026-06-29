@@ -84,12 +84,12 @@ def extract_text_from_part(part):
     return ""
 
 
-def fetch_emails(access_token, days=1):
+def fetch_emails_from_vendor(access_token, vendor_email, days=30):
     """Fetch emails from last N days."""
     emails = []
     try:
         result = gmail_get(access_token, "/users/me/messages", {
-            "q": f"in:sent newer_than:{days}d",
+            "q": f"from:{vendor_email} newer_than:{days}d",
             "maxResults": 100
         })
         for m in result.get("messages", []):
