@@ -13,14 +13,8 @@ CLIENT_SECRET = os.environ["GMAIL_CLIENT_SECRET"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 ACCOUNTS = [
-    {
-        "email": "matt@farmlindproduce.com",
-        "refresh_token": os.environ["GMAIL_REFRESH_TOKEN_1"]
-    },
-    {
-        "email": "farmlindproduce@gmail.com",
-        "refresh_token": os.environ["GMAIL_REFRESH_TOKEN_2"]
-    }
+    {"email": "matt@farmlindproduce.com", "refresh_token": os.environ["GMAIL_REFRESH_TOKEN_1"]},
+    {"email": "farmlindproduce@gmail.com", "refresh_token": os.environ["GMAIL_REFRESH_TOKEN_2"]}
 ]
 
 VENDORS = {
@@ -33,9 +27,9 @@ _test_email = os.environ.get("TEST_EMAIL", "").strip()
 NOTIFY_EMAILS = [_test_email] if _test_email else ["matt@farmlindproduce.com", "farmlindproduce@gmail.com"]
 
 REMINDER_SUBJECT = "Order Check -"
+STATE_FILE = ".order_state.json"
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-STATE_FILE = ".order_state.json"
 
 
 def env_is_true(name):
@@ -74,8 +68,24 @@ def gmail_post(access_token, path, body):
         return json.loads(resp.read())
 
 
+def decode_b64(data):
+    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="ignore")
+
+
+def extract_text_from_part(part):
+    mime = part.get("mimeType", "")
+    body_data = part.get("body", {}).get("data", "")
+    if mime == "text/plain" and body_data:
+        return decode_b64(body_data)
+    for sub in part.get("parts", []):
+        result = extract_text_from_part(sub)
+        if result:
+            return result
+    return ""
+
+
 def get_todays_emails(access_token, days=1):
-    """Get all emails sent in the last N days (default: today only)."""
+    """Get all emails sent in the last N days."""
     emails = []
     try:
         result = gmail_get(access_token, "/users/me/messages", {
@@ -88,16 +98,41 @@ def get_todays_emails(access_token, days=1):
             to_val = next((h["value"] for h in headers if h.get("name","").lower() == "to"), "")
             subj = next((h["value"] for h in headers if h.get("name","").lower() == "subject"), "")
             if to_val and subj:
-                emails.append({"to": to_val.lower(), "subject": subj})
+                body = extract_text_from_part(full.get("payload", {}))
+                emails.append({"to": to_val.lower(), "subject": subj, "body": body})
     except Exception as e:
         print(f"  Error fetching emails: {e}")
-
     return emails
 
 
 def check_vendor_in_email(vendor_email, email_to_header):
     """Check if vendor email is in the To header."""
     return vendor_email.lower() in email_to_header.lower()
+
+
+def extract_items_from_emails(emails, vendor_email):
+    """Use Claude to extract ordered items for a vendor."""
+    matching_emails = [e for e in emails if check_vendor_in_email(vendor_email, e["to"])]
+
+    if not matching_emails:
+        return []
+
+    combined_text = "\n\n".join([f"Subject: {e['subject']}\n{e['body']}" for e in matching_emails])
+
+    try:
+        response = claude.messages.create(
+            model="claude-opus-4-8",
+            max_tokens=500,
+            messages=[{
+                "role": "user",
+                "content": f"Extract all items/products ordered in these emails. Return as a simple list, one per line:\n\n{combined_text}"
+            }]
+        )
+        items_text = response.content[0].text.strip()
+        return [item.strip() for item in items_text.split("\n") if item.strip()]
+    except Exception as e:
+        print(f"  Error extracting items: {e}")
+        return []
 
 
 def load_state():
@@ -118,55 +153,49 @@ def save_state(state):
                          capture_output=True, check=False)
             subprocess.run(["git", "config", "user.name", "GitHub Actions"],
                          capture_output=True, check=False)
-
             subprocess.run(["git", "add", STATE_FILE], check=True, capture_output=True)
             result = subprocess.run(["git", "commit", "-m", "Update order check state"],
                                   capture_output=True, text=True)
-
             if result.returncode == 0:
-                print(f"State committed to git")
-                push_result = subprocess.run(["git", "push"], capture_output=True, text=True)
-                if push_result.returncode == 0:
-                    print("State pushed to remote")
-            else:
-                if "nothing to commit" not in result.stderr and "nothing to commit" not in result.stdout:
-                    print(f"Git commit returned: {result.stderr}")
+                subprocess.run(["git", "push"], capture_output=True, text=True)
         except Exception as e:
             print(f"Warning: failed to persist state to git: {e}")
     except Exception as e:
         print(f"Error saving state file: {e}")
 
 
-def build_reminder_body(vendors_ordered, vendors_not_ordered, today):
+def build_reminder_body(vendor_items, vendors_ordered, today):
     lines = [
-        f"Order Check Report - {today.strftime('%A, %B %d, %Y')}",
+        f"Order Summary - {today.strftime('%A, %B %d, %Y')}",
         "=" * 50,
         ""
     ]
 
-    if vendors_ordered:
-        lines.append("VENDORS ORDERED:")
-        for vendor in sorted(vendors_ordered):
-            lines.append(f"  ✓ {vendor}")
-    else:
-        lines.append("NO VENDORS ORDERED TODAY")
+    for vendor in sorted(vendor_items.keys()):
+        items = vendor_items[vendor]
+        lines.append(f"{vendor}:")
+        if items:
+            for item in items:
+                lines.append(f"  • {item}")
+        else:
+            lines.append("  (no items found)")
+        lines.append("")
 
-    lines.append("")
-
-    if vendors_not_ordered:
+    missing_vendors = [v for v in VENDORS.keys() if v not in vendors_ordered]
+    if missing_vendors:
         lines.append("VENDORS NOT ORDERED:")
-        for vendor in sorted(vendors_not_ordered):
-            lines.append(f"  ✗ {vendor}")
+        for v in missing_vendors:
+            lines.append(f"  ✗ {v}")
     else:
-        lines.append("ALL VENDORS ORDERED!")
+        lines.append("✓ All vendors ordered!")
 
     lines += ["", "- Farmlind Order Bot"]
     return "\n".join(lines)
 
 
-def send_reminder(access_token, sender_email, vendors_ordered, vendors_not_ordered, today):
+def send_reminder(access_token, sender_email, vendor_items, vendors_ordered, today):
     subject = f"{REMINDER_SUBJECT} {today.strftime('%A %b %d')}"
-    body = build_reminder_body(vendors_ordered, vendors_not_ordered, today)
+    body = build_reminder_body(vendor_items, vendors_ordered, today)
     raw = f"From: {sender_email}\r\nTo: {', '.join(NOTIFY_EMAILS)}\r\nSubject: {subject}\r\n\r\n{body}"
     encoded = base64.urlsafe_b64encode(raw.encode()).decode()
     gmail_post(access_token, "/users/me/messages/send", {"raw": encoded})
@@ -194,7 +223,7 @@ def main():
 
     print()
 
-    # Fetch today's emails from all accounts
+    # Fetch today's emails
     all_todays_emails = []
     for email_addr, token in access_tokens:
         emails = get_todays_emails(token, days=1)
@@ -205,54 +234,54 @@ def main():
         print("\n✓ No emails sent today — nothing to check.")
         return
 
-    print(f"\n✓ Total emails today: {len(all_todays_emails)}\n")
+    print(f"✓ Total emails today: {len(all_todays_emails)}\n")
 
     # Check which vendors were ordered
     vendors_ordered = []
-    vendors_not_ordered = []
+    vendor_items = {}
 
     for vendor_name, vendor_email in VENDORS.items():
         ordered = any(check_vendor_in_email(vendor_email, email["to"]) for email in all_todays_emails)
         if ordered:
             vendors_ordered.append(vendor_name)
             print(f"✓ {vendor_name}: ORDERED")
+            items = extract_items_from_emails(all_todays_emails, vendor_email)
+            vendor_items[vendor_name] = items
+            if items:
+                print(f"  Items: {', '.join(items[:3])}{'...' if len(items) > 3 else ''}")
         else:
-            vendors_not_ordered.append(vendor_name)
             print(f"✗ {vendor_name}: NOT ORDERED")
 
     print()
 
-    # Check if reminder was already sent today
+    # Track first email and 30-minute timer
     state = load_state()
     today_key = today.isoformat()
     state_today = state.get(today_key, {})
+
+    first_email_time = state_today.get("first_email_time")
+    if all_todays_emails and not first_email_time:
+        first_email_time = now_ms
+        state_today["first_email_time"] = first_email_time
+        state[today_key] = state_today
+        save_state(state)
+        print(f"First email detected at {datetime.fromtimestamp(first_email_time/1000).strftime('%H:%M:%S')}")
 
     already_sent = state_today.get("sent", False)
     force = env_is_true("FORCE_SEND")
     dry = env_is_true("DRY_RUN")
     scan_only = env_is_true("SCAN_ONLY")
 
-    # Track when we first detected emails
-    first_email_time = state_today.get("first_email_time")
-    if all_todays_emails and not first_email_time:
-        # First time we've seen emails today - record the time
-        first_email_time = now_ms
-        state_today["first_email_time"] = first_email_time
-        state[today_key] = state_today
-        save_state(state)
-        print(f"✓ First email detected at {datetime.fromtimestamp(first_email_time/1000).strftime('%H:%M:%S')}")
-
     if scan_only:
         print("📊 SCAN MODE: Monitoring for orders...\n")
         if first_email_time:
-            time_since_first = (now_ms - first_email_time) / 1000 / 60  # minutes
+            time_since_first = (now_ms - first_email_time) / 1000 / 60
             print(f"First email was {time_since_first:.1f} minutes ago")
             if time_since_first >= 30:
                 print("✓ 30 minutes passed - ready to send email")
             else:
                 minutes_left = 30 - time_since_first
-                print(f"Will send email in {minutes_left:.1f} minutes\n")
-        print(build_reminder_body(vendors_ordered, vendors_not_ordered, today))
+                print(f"Will send email in {minutes_left:.1f} minutes")
         return
 
     # Decide whether to send
@@ -264,7 +293,7 @@ def main():
         print("✓ Reminder already sent today — nothing to do.")
         return
     elif first_email_time:
-        time_since_first = (now_ms - first_email_time) / 1000 / 60  # minutes
+        time_since_first = (now_ms - first_email_time) / 1000 / 60
         if time_since_first >= 30:
             send_email_now = True
         else:
@@ -272,25 +301,20 @@ def main():
             print(f"Will send reminder in {30 - time_since_first:.1f} minutes")
             return
 
-    # Send reminder if conditions met
-    if send_email_now and (vendors_not_ordered or force):
+    # Send reminder
+    if send_email_now:
         sender_email, sender_token = access_tokens[0]
 
         if dry:
             print("--- DRY RUN: email NOT sent ---\n")
-            print(build_reminder_body(vendors_ordered, vendors_not_ordered, today))
+            print(build_reminder_body(vendor_items, vendors_ordered, today))
         else:
-            send_reminder(sender_token, sender_email, vendors_ordered, vendors_not_ordered, today)
-
-            # Save state
+            send_reminder(sender_token, sender_email, vendor_items, vendors_ordered, today)
             state_today["sent"] = True
             state[today_key] = state_today
             save_state(state)
-    elif send_email_now:
-        print("✓ All vendors ordered — no reminder needed.")
-        state_today["sent"] = True
-        state[today_key] = state_today
-        save_state(state)
+    else:
+        print("✓ Email not ready to send yet.")
 
 
 if __name__ == "__main__":
